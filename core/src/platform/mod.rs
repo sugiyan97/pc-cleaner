@@ -1,11 +1,31 @@
 //! OS 固有の知識を隠蔽する抽象層。
 //!
-//! `KnownDir` と `Platform` trait は本モジュール（#3 スコープ）で定義する。
-//! OS ごとの実装（`windows.rs` / `unknown.rs`）は #4 で追加され、このファイル
-//! からは一切 `#[cfg]` や OS 固有 API を参照しない（要件 4.2）。
+//! `KnownDir` と `Platform` trait は本モジュールで定義する。OS ごとの実装は
+//! `windows.rs` / `unknown.rs` に置き、このファイルからは一切 `#[cfg]` や
+//! OS 固有 API を参照しない（要件 4.2 / NF-MNT-03）。
+//!
+//! どちらの実装を使うかは、各 OS ファイルが自分の中の `#[cfg]` で
+//! `PlatformImpl` という同じ名前を選択的に公開することで決まる。本ファイルは
+//! 両方を glob import するだけで、OS 条件そのものは登場しない。将来の OS 対応
+//! （NF-EXT-02）は `platform/` にファイルを追加し、下に2行足すだけでよい。
+//! （新 OS を追加する場合、`unknown.rs` 側の `#[cfg(not(windows))]` を
+//! `#[cfg(not(any(windows, target_os = "..."))))]` のように狭める必要がある）
+
+mod unknown;
+mod windows;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+#[allow(unused_imports)]
+use self::unknown::*;
+#[allow(unused_imports)]
+use self::windows::*;
+
+/// 実行中の OS に対応する [`Platform`] 実装を生成する。
+pub fn current() -> Box<dyn Platform> {
+    Box::new(PlatformImpl::new())
+}
 
 /// OS 固有の実パスを直接書かずに走査基点を指定するための抽象キー。
 ///
@@ -86,4 +106,9 @@ mod tests {
     // Platform は &dyn Platform として core 内の他モジュール（#5/#7）に
     // 渡される想定のため、dyn 互換であることをコンパイル時に固定する。
     fn _assert_dyn(_: &dyn Platform) {}
+
+    #[test]
+    fn current_returns_a_platform_impl() {
+        let _platform = current();
+    }
 }

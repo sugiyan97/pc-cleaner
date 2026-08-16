@@ -1,0 +1,9 @@
+[package]
+name = "pc-cleaner-core"
+description = "pc-cleaner のロジック本体（UI 非依存）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# 依存なし（#4 で trash、#5 で走査用クレート、#8 で serde を追加予定）

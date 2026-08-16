@@ -220,13 +220,14 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | `user_temp` | ユーザー一時ファイル | `UserTemp` | Safe | 有効 |
 | `browser_cache` | ブラウザ/アプリのキャッシュ | `Cache` | Safe | 有効 |
 | `thumbnail_cache` | サムネイルキャッシュ | `LocalAppData` | Safe | 有効 |
-| `recycle_bin` | ゴミ箱 | `RecycleBin` | Safe | 有効 |
+| `recycle_bin` | ゴミ箱 | `RecycleBin` | Caution | 有効（既定 OFF） |
 | `old_logs` | 古いログ（180 日超） | `LocalAppData` | Caution | 有効（既定 OFF） |
 | `old_downloads` | 古いダウンロード（90 日超） | `Downloads` | Review | 有効（既定 OFF・確認前提） |
 | `system_temp` | `C:\Windows\Temp` | `SystemTemp` | （将来・要管理者） | 定義のみ。`needs_admin = true` としてフィルタ除外 |
 
 - `old_logs` の経過日数しきい値は 180 日、`old_downloads` は 90 日とし、初版ではルールにハードコードすること。ただし将来 `Config` へ移せる構造とすること。
 - 各ルールは安定した識別子（`id`）、表示名（`label`）、説明文（`description`）を必ず持つこと。
+- `recycle_bin` は当初 Safe（既定 ON）としていたが、設計目標 G2「削除はゴミ箱経由を既定とし、誤りが復旧可能であること」と衝突するため Caution（既定 OFF）に変更した（Issue #9 実装時に判断）。ゴミ箱の中身を消す操作にはゴミ箱という退避先が存在せず、Safe のままではワンクリック掃除（フロー①）が確認 1 回でゴミ箱を完全に空にしてしまうため。
 
 ---
 

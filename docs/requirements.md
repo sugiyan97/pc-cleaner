@@ -2,7 +2,7 @@
 
 - 対象プロダクト：`pc-cleaner`（手動選択型ディスク掃除ツール）
 - 版：初版（第1〜第3段階を対象範囲とする）
-- 参照資料：`pc-cleaner-design.md`（設計書） / `pc-cleaner-roadmap.md`（将来対応リスト） / `pc-cleaner-flows.html`（処理フロー）
+- 参照資料：`docs/roadmap.md`（将来対応リスト。本書「8. 将来拡張要件」の元資料）
 
 ---
 

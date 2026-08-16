@@ -39,7 +39,7 @@
 | Rule | 掃除ルール。許可リストの 1 項目であり、判定支援の一次情報。走査の基点・絞り込み条件・安全度・説明文などを保持する |
 | ScanEntry | 走査結果として得られた削除候補エントリ。パス・サイズ・件数・更新日時・経過日数・推奨可否・理由・選択状態を保持する |
 | Safety | ルールの安全度区分。`Safe` / `Caution` / `Review` の 3 値をとり、既定の選択状態と表示方法を決定する |
-| KnownDir | OS 固有の実パスを直接書かずに走査基点を指定するための抽象キー。`UserTemp` / `SystemTemp` / `LocalAppData` / `Cache` / `RecycleBin` を持つ |
+| KnownDir | OS 固有の実パスを直接書かずに走査基点を指定するための抽象キー。`UserTemp` / `SystemTemp` / `LocalAppData` / `Cache` / `RecycleBin` / `Downloads` を持つ |
 | Platform trait | OS 固有の知識（既知ディレクトリ解決・ゴミ箱送り・管理者権限要否判定）を隠蔽する抽象インターフェース |
 | MatchKind | ルール内での対象絞り込み方式。`All` / `Extension(Vec<String>)` / `OlderThan` を持つ |
 | recommend | `ScanEntry` と `Rule` を入力として推奨可否と理由を返す純粋関数 |
@@ -114,7 +114,7 @@ pc-cleaner/
 
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
 - `Platform` trait は次の 3 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）。
-- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、将来・要管理者）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin` を持つこと。
+- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、将来・要管理者）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）を持つこと。
 - ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
 - `platform/windows.rs` に入れてよいのはパス解決とゴミ箱送りのみとし、ルールとロジックは OS 非依存のまま保つこと。
@@ -222,7 +222,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | `thumbnail_cache` | サムネイルキャッシュ | `LocalAppData` | Safe | 有効 |
 | `recycle_bin` | ゴミ箱 | `RecycleBin` | Safe | 有効 |
 | `old_logs` | 古いログ（180 日超） | `LocalAppData` | Caution | 有効（既定 OFF） |
-| `old_downloads` | 古いダウンロード（90 日超） | — | Review | 有効（既定 OFF・確認前提） |
+| `old_downloads` | 古いダウンロード（90 日超） | `Downloads` | Review | 有効（既定 OFF・確認前提） |
 | `system_temp` | `C:\Windows\Temp` | `SystemTemp` | （将来・要管理者） | 定義のみ。`needs_admin = true` としてフィルタ除外 |
 
 - `old_logs` の経過日数しきい値は 180 日、`old_downloads` は 90 日とし、初版ではルールにハードコードすること。ただし将来 `Config` へ移せる構造とすること。
@@ -314,10 +314,10 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 | # | ステップ | 要件 |
 |---|----------|------|
-| 1 | 起動 | `cleaner scan` または `cleaner clean --dry-run` を受け付けること。CLI は明示解除しない限り削除しないこと（`dry_run` が既定的挙動） |
+| 1 | 起動 | `pc-cleaner scan` または `pc-cleaner clean --dry-run` を受け付けること。CLI は明示解除しない限り削除しないこと（`dry_run` が既定的挙動） |
 | 2 | 走査＋推奨 | GUI と同一の `core`（`scan` / `recommend`）を用い、CLI/GUI で結果が一致すること |
 | 3 | 一覧出力（削除なし） | ルール・パス・サイズ・`age_days`・推奨可否・合計解放見込みを標準出力へ出力すること |
-| 4a | 分岐：明示実行 | `cleaner clean` によりゴミ箱削除を実行すること |
+| 4a | 分岐：明示実行 | `pc-cleaner clean` によりゴミ箱削除を実行すること |
 | 4b | 分岐：完全削除 | `--permanent` が明示指定されたときのみ完全削除すること。復旧不可のため確認を要すること |
 
 ### 7.4 フロー④：管理者権限領域（将来対応の分岐）
@@ -452,13 +452,10 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 | # | 区分 | 内容 | 対応方針 |
 |---|------|------|----------|
-| R1 | 未決 | 設定ファイルの配置パスが資料間で揺れている（設計書は `%APPDATA%\pc-cleaner\config.json`、フロー図は `%APPDATA%\cleaner\config.json`） | 実装前に一方へ確定させること。本書では `%APPDATA%\pc-cleaner\config.json` を採用する |
-| R2 | 未決 | CLI 実行バイナリ名がフロー図では `cleaner` となっている（プロダクト名は `pc-cleaner`） | 実装前に確定させること |
-| R3 | 未決 | `old_downloads` の走査基点となる `KnownDir` が未定義（初期ルール表では「—」） | ダウンロードフォルダに対応する `KnownDir` の追加要否を実装前に決定すること |
-| R4 | 未決 | 管理者権限領域（`system_temp` 等）の有効化時期 | 将来対応 A1 / A2 の着手時期に依存。初版では除外し「将来対応」と表示すること |
-| R5 | 未決 | macOS / Linux 対応の着手時期 | 将来対応 B1 / B2（優先度：中）。初版では `platform/unknown.rs` の最小スタブに留めること |
-| R6 | リスク | `Caution` / `Review` の候補をユーザーが十分な確認なく一括選択し、必要ファイルを削除する | 既定 OFF・注意色・`reason` 提示・ゴミ箱経由の 4 重防御で緩和すること |
-| R7 | リスク | 使用中ファイルの削除により、アプリケーションの動作に影響が出る | `recommend()` による使用中の可能性の検知（更新が数分前のものを非推奨とする）で緩和すること。検知精度の向上は将来対応 C2 とする |
-| R8 | リスク | `--permanent` による完全削除は復旧不可である | 明示オプション時のみ実行し、確認を要すること |
-| R9 | リスク | 経過日数しきい値（180 日 / 90 日）がユーザーの利用実態に合わない場合がある | 初版はハードコードとし、将来対応 C1 で `Config` へ移して調整可能とすること |
-| R10 | リスク | 誤削除発生時の追跡手段が初版には存在しない | 将来対応 D1（削除ログ、優先度：高）を初版直後に着手すること |
+| R1 | 未決 | 管理者権限領域（`system_temp` 等）の有効化時期 | 将来対応 A1 / A2 の着手時期に依存。初版では除外し「将来対応」と表示すること |
+| R2 | 未決 | macOS / Linux 対応の着手時期 | 将来対応 B1 / B2（優先度：中）。初版では `platform/unknown.rs` の最小スタブに留めること |
+| R3 | リスク | `Caution` / `Review` の候補をユーザーが十分な確認なく一括選択し、必要ファイルを削除する | 既定 OFF・注意色・`reason` 提示・ゴミ箱経由の 4 重防御で緩和すること |
+| R4 | リスク | 使用中ファイルの削除により、アプリケーションの動作に影響が出る | `recommend()` による使用中の可能性の検知（更新が数分前のものを非推奨とする）で緩和すること。検知精度の向上は将来対応 C2 とする |
+| R5 | リスク | `--permanent` による完全削除は復旧不可である | 明示オプション時のみ実行し、確認を要すること |
+| R6 | リスク | 経過日数しきい値（180 日 / 90 日）がユーザーの利用実態に合わない場合がある | 初版はハードコードとし、将来対応 C1 で `Config` へ移して調整可能とすること |
+| R7 | リスク | 誤削除発生時の追跡手段が初版には存在しない | 将来対応 D1（削除ログ、優先度：高）を初版直後に着手すること |

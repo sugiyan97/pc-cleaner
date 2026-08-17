@@ -112,8 +112,7 @@ pub fn reapply_pref_for_rule(entries: &mut [ScanEntry], rule_id: &str, config: &
 /// 除外された行の表示用メッセージ（`ExclusionReason` の一部のみ GUI で使う。
 /// `NotSelected` は「チェックが外れている」という表示そのものなので対象外）。
 pub fn recycle_bin_exclusion_hint() -> &'static str {
-    "ゴミ箱の中身はこの画面からは削除できません。完全削除するには CLI の \
-     `pc-cleaner clean --all --permanent` を使用してください（復元できません）。"
+    "ゴミ箱の中身は「完全削除」にチェックを入れた場合のみ対象になります（復元できません）。"
 }
 
 /// 削除計画から除外されたパスの一覧（NotSelected を除く）を、UI が

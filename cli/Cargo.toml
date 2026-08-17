@@ -1,0 +1,14 @@
+[package]
+name = "pc-cleaner-cli"
+description = "pc-cleaner の薄い CLI（検証・自動化用）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pc-cleaner"
+path = "src/main.rs"
+
+[dependencies]
+pc-cleaner-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }

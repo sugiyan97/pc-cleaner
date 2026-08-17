@@ -27,7 +27,17 @@ Windows を優先しつつ OS 依存を隔離した、手動選択型のディ�
 | `core/src/config.rs` | ユーザー設定の JSON 永続化 |
 | `core/src/delete.rs` | 「走査 → プレビュー → 実行」を型で強制する削除実行（ゴミ箱送り／ドライラン／完全削除） |
 
-`cli` / `gui` crate は未実装です。進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
+薄い CLI（`cli` crate、実行バイナリ名 `pc-cleaner`）も実装済みです。
+
+```sh
+pc-cleaner scan               # Safe ルールを走査して一覧表示（削除しない）
+pc-cleaner scan --all         # Caution / Review も含めて走査
+pc-cleaner clean --dry-run    # 削除予定のプレビューのみ表示
+pc-cleaner clean              # ゴミ箱経由で削除を実行
+pc-cleaner clean --permanent  # 確認の上、完全削除（復旧不可）
+```
+
+`gui` crate は未実装です。進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
 
 ## ビルド・テスト
 

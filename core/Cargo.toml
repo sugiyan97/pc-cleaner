@@ -6,4 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# 依存なし（#4 で trash、#5 で走査用クレート、#8 で serde を追加予定）
+# #5 で走査用クレート、#8 で serde を追加予定
+
+[target.'cfg(windows)'.dependencies]
+# ゴミ箱送りの実装。default features には os_limited 用の chrono が含まれるが
+# 初版では trash::delete しか使わないため落とす（D3 で戻す想定）。
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }

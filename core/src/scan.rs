@@ -110,6 +110,20 @@ pub fn rules_for_safeties(safeties: &[Safety]) -> Vec<Rule> {
         .collect()
 }
 
+/// F-SCAN-06 / F-SCAN-07 の標準スコープを返す。`all == false` は `Safe` の
+/// みでフロー①（ワンクリック掃除）、`all == true` は `Safe` / `Caution` /
+/// `Review` すべてでフロー②（手動レビュー）に対応する。
+///
+/// CLI の `--all` フラグ・GUI のスコープ切替はいずれもこの1関数を経由させ、
+/// `Vec<Safety>` の組み立てを重複させない（F-CLI-08 / 9.5）。
+pub fn safety_scope(all: bool) -> Vec<Safety> {
+    if all {
+        vec![Safety::Safe, Safety::Caution, Safety::Review]
+    } else {
+        vec![Safety::Safe]
+    }
+}
+
 /// `config.rule_prefs` を走査結果の `selected` に適用する純粋関数（F-CFG-01）。
 ///
 /// `AlwaysSelect` は強制的に選択、`Exclude` は強制的に除外、`AskEachTime`
@@ -128,6 +142,29 @@ pub fn apply_rule_prefs(entries: &mut [ScanEntry], config: &Config) {
 /// `rules` を走査して `ScanEntry` を返す。進捗通知は行わない。
 pub fn scan(platform: &dyn Platform, rules: &[Rule]) -> Vec<ScanEntry> {
     scan_with_progress(platform, rules, |_| {})
+}
+
+/// [`scan`] してから [`apply_rule_prefs`] を適用するまでの一連の処理。
+///
+/// CLI（`scan_and_apply_prefs`）・GUI（走査ワーカー）はいずれもこの2関数を
+/// 同じ順序で呼んでいた。CLI/GUI にロジックを持たせない（F-CLI-01 /
+/// F-GUI-07）という原則をこの1関数に体現し、両者から呼び出す。
+pub fn scan_pipeline(platform: &dyn Platform, rules: &[Rule], config: &Config) -> Vec<ScanEntry> {
+    let mut entries = scan(platform, rules);
+    apply_rule_prefs(&mut entries, config);
+    entries
+}
+
+/// [`scan_pipeline`] の進捗通知つき版（GUI の非同期走査で使う）。
+pub fn scan_pipeline_with_progress(
+    platform: &dyn Platform,
+    rules: &[Rule],
+    config: &Config,
+    on_progress: impl FnMut(ScanProgress),
+) -> Vec<ScanEntry> {
+    let mut entries = scan_with_progress(platform, rules, on_progress);
+    apply_rule_prefs(&mut entries, config);
+    entries
 }
 
 /// `rules` を走査して `ScanEntry` を返す。`on_progress` で進捗を通知する。
@@ -601,6 +638,15 @@ mod tests {
         let all = rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review]);
         assert!(all.iter().all(|r| !r.needs_admin));
         assert!(all.iter().any(|r| r.id == "old_downloads"));
+    }
+
+    #[test]
+    fn safety_scope_matches_flow_one_and_flow_two() {
+        assert_eq!(safety_scope(false), vec![Safety::Safe]);
+        assert_eq!(
+            safety_scope(true),
+            vec![Safety::Safe, Safety::Caution, Safety::Review]
+        );
     }
 
     const fn assert_send<T: Send>() {}

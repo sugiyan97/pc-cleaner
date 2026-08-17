@@ -8,8 +8,8 @@
 
 use clap::{Args, Parser, Subcommand};
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ItemOutcome, Safety, ScanEntry,
-    apply_rule_prefs, config, execute, platform, preview, rules_for_safeties, scan,
+    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ItemOutcome, ScanEntry, config,
+    execute, human_size, platform, preview, rules_for_safeties, safety_scope, scan_pipeline,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -70,22 +70,15 @@ fn load_config(platform: &dyn platform::Platform) -> Config {
     }
 }
 
-fn safety_scope(all: bool) -> Vec<Safety> {
-    if all {
-        vec![Safety::Safe, Safety::Caution, Safety::Review]
-    } else {
-        vec![Safety::Safe]
-    }
-}
-
+/// core の [`scan_pipeline`] を呼ぶだけの薄いラッパー。GUI（`gui/src/task.rs`
+/// の走査ワーカー）と同じ core 呼び出し列であることを維持すること（F-CLI-08）。
 fn scan_and_apply_prefs(
     platform: &dyn platform::Platform,
     config: &Config,
     all: bool,
 ) -> (Vec<pc_cleaner_core::Rule>, Vec<ScanEntry>) {
     let rules = rules_for_safeties(&safety_scope(all));
-    let mut entries = scan(platform, &rules);
-    apply_rule_prefs(&mut entries, config);
+    let entries = scan_pipeline(platform, &rules, config);
     (rules, entries)
 }
 
@@ -233,35 +226,9 @@ fn print_outcome(outcome: &DeleteOutcome) {
     }
 }
 
-/// バイト数を読みやすい単位に変換する。
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-    if unit_index == 0 {
-        format!("{bytes} {}", UNITS[0])
-    } else {
-        format!("{size:.1} {}", UNITS[unit_index])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_size_formats_common_magnitudes() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(999), "999 B");
-        assert_eq!(human_size(1024), "1.0 KB");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert_eq!(human_size(1024 * 1024), "1.0 MB");
-        assert_eq!(human_size(1024 * 1024 * 1024), "1.0 GB");
-    }
 
     #[test]
     fn is_affirmative_accepts_y_and_yes_case_insensitively() {

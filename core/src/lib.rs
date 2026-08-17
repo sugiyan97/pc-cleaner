@@ -13,6 +13,7 @@
 pub mod config;
 pub mod delete;
 pub mod entry;
+pub mod format;
 pub mod platform;
 pub mod recommend;
 pub mod rule;
@@ -25,11 +26,13 @@ pub use delete::{
     PlannedDeletion, execute, execute_with_progress, preview,
 };
 pub use entry::ScanEntry;
+pub use format::human_size;
 pub use platform::KnownDir;
 pub use recommend::Recommendation;
 pub use rule::{MatchKind, Rule, Safety};
 pub use scan::{
-    ScanProgress, SkipReason, apply_rule_prefs, rules_for_safeties, scan, scan_with_progress,
+    ScanProgress, SkipReason, apply_rule_prefs, rules_for_safeties, safety_scope, scan,
+    scan_pipeline, scan_pipeline_with_progress, scan_with_progress,
 };
 
 #[cfg(test)]

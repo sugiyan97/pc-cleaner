@@ -39,6 +39,7 @@ Rust のビルド環境は不要です。[Releases](https://github.com/sugiyan97
 | `core/src/recommend.rs` | 安全度・経過日数から推奨可否を判定する純粋関数 |
 | `core/src/config.rs` | ユーザー設定の JSON 永続化 |
 | `core/src/delete.rs` | 「走査 → プレビュー → 実行」を型で強制する削除実行（ゴミ箱送り／ドライラン／完全削除） |
+| `core/src/format.rs` | CLI/GUI 共通の表示フォーマッタ（`human_size` 等） |
 
 ### ソースから実行する
 

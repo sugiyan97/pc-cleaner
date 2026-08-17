@@ -78,6 +78,14 @@ pub struct App {
     rx: Option<Receiver<WorkerMsg>>,
 
     dry_run: bool,
+    /// 完全削除（ゴミ箱を経由しない、復旧不可）を要求しているか。
+    /// `true` の間は [`DeleteMode`] が常に [`DeleteMethod::Permanent`] になるが、
+    /// 実際にドライランでなくなるのは確認モーダルで対象件数を入力し終えた後
+    /// （`ui_confirm_modal` が `DeleteRequest::permanent_confirmed()` を使う）
+    /// だけである（F-DEL-06）。
+    permanent: bool,
+    /// 完全削除確認モーダルで、対象件数の入力欄に入力中の文字列。
+    permanent_confirm_text: String,
     confirming: bool,
     last_outcome: Option<OutcomeSummary>,
     notices: Vec<String>,
@@ -107,6 +115,8 @@ impl App {
             task: Task::Idle,
             rx: None,
             dry_run: false,
+            permanent: false,
+            permanent_confirm_text: String::new(),
             confirming: false,
             last_outcome: None,
             notices: Vec::new(),
@@ -186,11 +196,16 @@ impl App {
 
     /// 選択の再集計（F-GUI-05）。core の `preview()` を通した結果のみを
     /// 真実の値として使う（GUI 側で合計を足し算しない）。
+    ///
+    /// `permanent` が立っている間は必ず `permanent_unconfirmed()` を使う
+    /// （CLI の `run_clean` が `--permanent` 単体でまず未確定プレビューを
+    /// 見せるのと同じ設計）。実際に確認済みの完全削除計画を作るのは
+    /// `ui_confirm_modal` の役目であり、ここでは絶対に確定させない。
     fn recompute_plan(&mut self) {
-        let request = if self.dry_run {
-            DeleteRequest::dry_run()
-        } else {
-            DeleteRequest::execute()
+        let request = match (self.dry_run, self.permanent) {
+            (_, true) => DeleteRequest::permanent_unconfirmed(),
+            (true, false) => DeleteRequest::dry_run(),
+            (false, false) => DeleteRequest::execute(),
         };
         let mode = DeleteMode::resolve(&self.config, request);
         let plan =
@@ -430,6 +445,7 @@ impl App {
         });
         let busy = self.is_busy();
         let mut confirm_clicked = false;
+        let mut plan_dirty = false;
 
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
             if let Some((item_count, total_size, is_empty, excluded_len, needs_permanent)) =
@@ -440,7 +456,21 @@ impl App {
                         "選択中: {item_count} 件（{}）を解放",
                         view::human_size(total_size)
                     ));
-                    ui.checkbox(&mut self.dry_run, "削除せず確認だけ（ドライラン）");
+                    if ui
+                        .checkbox(&mut self.dry_run, "削除せず確認だけ（ドライラン）")
+                        .changed()
+                    {
+                        plan_dirty = true;
+                    }
+                    if ui
+                        .checkbox(
+                            &mut self.permanent,
+                            "完全削除（ゴミ箱を経由しない、復旧不可）",
+                        )
+                        .changed()
+                    {
+                        plan_dirty = true;
+                    }
                     if ui
                         .add_enabled(!busy && !is_empty, egui::Button::new("確定"))
                         .clicked()
@@ -448,11 +478,17 @@ impl App {
                         confirm_clicked = true;
                     }
                 });
+                if self.permanent {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "完全削除は復元できません。確定時にあらためて確認します。",
+                    );
+                }
                 if excluded_len > 0 {
                     ui.small(format!(
                         "除外: {excluded_len} 件（選択されていない・許可リスト外・要管理者権限など）"
                     ));
-                    if needs_permanent {
+                    if needs_permanent && !self.permanent {
                         ui.small(view::recycle_bin_exclusion_hint());
                     }
                 }
@@ -481,8 +517,14 @@ impl App {
         if confirm_clicked {
             self.confirming = true;
         }
+        if plan_dirty {
+            self.plan_dirty = true;
+        }
     }
 
+    /// 削除実行前の最終確認。完全削除（`is_permanent`）のときは、単純な
+    /// ボタン確認だけでは誤クリックに弱いため、対象件数を正確に入力しないと
+    /// 「実行」ボタンが有効にならない二段階の確認にする（#26 / F-DEL-06）。
     fn ui_confirm_modal(&mut self, ctx: &egui::Context) {
         if !self.confirming {
             return;
@@ -494,6 +536,7 @@ impl App {
         let item_count = plan.item_count();
         let total_size = plan.total_size();
         let is_dry_run = plan.mode().is_dry_run();
+        let is_permanent = plan.mode().method() == pc_cleaner_core::DeleteMethod::Permanent;
         let paths: Vec<String> = plan
             .items()
             .iter()
@@ -507,6 +550,9 @@ impl App {
         let mut open = true;
         let mut proceed = false;
         let mut cancel = false;
+        let confirm_text = &mut self.permanent_confirm_text;
+        let can_proceed = !is_permanent || confirm_text.trim() == item_count.to_string();
+
         egui::Window::new("削除の確認")
             .collapsible(false)
             .resizable(false)
@@ -515,12 +561,17 @@ impl App {
                 ui.label(format!(
                     "{item_count} 件（{}）を{}。",
                     view::human_size(total_size),
-                    if is_dry_run {
+                    if is_permanent {
+                        "完全に削除します（ゴミ箱を経由せず、復元できません）"
+                    } else if is_dry_run {
                         "プレビューします（実際には削除しません）"
                     } else {
                         "ゴミ箱へ送ります"
                     }
                 ));
+                if is_permanent {
+                    ui.colored_label(ui.visuals().error_fg_color, "この操作は取り消せません。");
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
@@ -530,8 +581,17 @@ impl App {
                         }
                     });
                 ui.separator();
+                if is_permanent {
+                    ui.label(format!(
+                        "続行するには対象件数「{item_count}」を入力してください。"
+                    ));
+                    ui.text_edit_singleline(confirm_text);
+                }
                 ui.horizontal(|ui| {
-                    if ui.button("実行").clicked() {
+                    if ui
+                        .add_enabled(can_proceed, egui::Button::new("実行"))
+                        .clicked()
+                    {
                         proceed = true;
                     }
                     if ui.button("キャンセル").clicked() {
@@ -542,15 +602,26 @@ impl App {
 
         if proceed {
             self.confirming = false;
-            if let Some(plan) = self.plan.take() {
-                self.task = Task::Deleting {
-                    done: 0,
-                    total: plan.item_count(),
-                };
-                self.rx = Some(task::spawn_delete(ctx.clone(), plan, self.demo));
-            }
+            self.permanent_confirm_text.clear();
+            let final_plan = if is_permanent {
+                // permanent_unconfirmed() で作った計画は確定できないため、
+                // ここで初めて permanent_confirmed() で作り直す（F-DEL-01）。
+                let mode = DeleteMode::resolve(&self.config, DeleteRequest::permanent_confirmed());
+                pc_cleaner_core::preview(self.platform.as_ref(), &self.entries, &self.rules, mode)
+            } else if let Some(plan) = self.plan.take() {
+                plan
+            } else {
+                return;
+            };
+            self.permanent = false; // 実行後は既定（ゴミ箱経由）に戻す
+            self.task = Task::Deleting {
+                done: 0,
+                total: final_plan.item_count(),
+            };
+            self.rx = Some(task::spawn_delete(ctx.clone(), final_plan, self.demo));
         } else if cancel || !open {
             self.confirming = false;
+            self.permanent_confirm_text.clear();
         }
     }
 }

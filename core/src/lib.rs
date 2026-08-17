@@ -11,6 +11,7 @@
 #![deny(unsafe_code)]
 
 pub mod config;
+pub mod delete;
 pub mod entry;
 pub mod platform;
 pub mod recommend;
@@ -18,6 +19,11 @@ pub mod rule;
 pub mod scan;
 
 pub use config::{Config, RulePref};
+pub use delete::{
+    DeleteAction, DeleteMethod, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress,
+    DeleteRequest, DryRunReason, ExcludedEntry, ExclusionReason, ItemOutcome, ItemResult,
+    PlannedDeletion, execute, execute_with_progress, preview,
+};
 pub use entry::ScanEntry;
 pub use platform::KnownDir;
 pub use recommend::Recommendation;

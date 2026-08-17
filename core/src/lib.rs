@@ -15,12 +15,16 @@ pub mod entry;
 pub mod platform;
 pub mod recommend;
 pub mod rule;
+pub mod scan;
 
 pub use config::{Config, RulePref};
 pub use entry::ScanEntry;
 pub use platform::KnownDir;
 pub use recommend::Recommendation;
 pub use rule::{MatchKind, Rule, Safety};
+pub use scan::{
+    ScanProgress, SkipReason, apply_rule_prefs, rules_for_safeties, scan, scan_with_progress,
+};
 
 #[cfg(test)]
 mod tests {

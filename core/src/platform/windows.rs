@@ -28,6 +28,7 @@ pub(super) struct WindowsPlatform {
     cache: PathBuf,
     recycle_bin: PathBuf,
     downloads: PathBuf,
+    thumbnail_cache: PathBuf,
     /// 管理者権限を要すると判定する基点の一覧。
     admin_roots: Vec<PathBuf>,
 }
@@ -48,6 +49,7 @@ impl WindowsPlatform {
         let cache = join_win(&local_app_data, r"Microsoft\Windows\INetCache");
         let recycle_bin = join_win(&system_drive, r"$Recycle.Bin");
         let downloads = join_win(&user_profile, "Downloads");
+        let thumbnail_cache = join_win(&local_app_data, r"Microsoft\Windows\Explorer");
 
         // Program Files の実パスは %ProgramFiles% 等で上書きされうるが、初版の
         // ヒューリスティックでは %SystemDrive% からの既定位置で近似する。
@@ -65,6 +67,7 @@ impl WindowsPlatform {
             cache,
             recycle_bin,
             downloads,
+            thumbnail_cache,
             admin_roots,
         }
     }
@@ -78,6 +81,7 @@ impl WindowsPlatform {
             KnownDir::Cache => self.cache.clone(),
             KnownDir::RecycleBin => self.recycle_bin.clone(),
             KnownDir::Downloads => self.downloads.clone(),
+            KnownDir::ThumbnailCache => self.thumbnail_cache.clone(),
         }
     }
 
@@ -185,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn known_dir_resolves_all_six_kinds() {
+    fn known_dir_resolves_all_seven_kinds() {
         let platform = fixture();
         assert_eq!(
             platform.resolve(KnownDir::UserTemp),
@@ -210,6 +214,10 @@ mod tests {
         assert_eq!(
             platform.resolve(KnownDir::Downloads),
             PathBuf::from(r"C:\Users\alice\Downloads")
+        );
+        assert_eq!(
+            platform.resolve(KnownDir::ThumbnailCache),
+            PathBuf::from(r"C:\Users\alice\AppData\Local\Microsoft\Windows\Explorer")
         );
     }
 

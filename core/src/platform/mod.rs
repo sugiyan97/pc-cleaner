@@ -46,6 +46,13 @@ pub enum KnownDir {
     RecycleBin,
     /// ダウンロードフォルダ（Windows では `%USERPROFILE%\Downloads`）。
     Downloads,
+    /// サムネイルキャッシュ（Windows では
+    /// `%LOCALAPPDATA%\Microsoft\Windows\Explorer`）。
+    ///
+    /// `Cache`（`INetCache`）とは別領域。`LocalAppData` 全体を基点にすると
+    /// 無関係な `.db` ファイルまで巻き込むため、専用の基点として分離している
+    /// （Issue #16）。
+    ThumbnailCache,
 }
 
 /// [`Platform`] の操作が失敗した際のエラー。

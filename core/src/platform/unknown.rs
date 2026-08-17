@@ -35,6 +35,10 @@ impl Platform for UnknownPlatform {
         // 判定手段がないため、安全側（管理者権限が必要）に倒す（NF-SAF-01）。
         true
     }
+
+    fn config_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[cfg(not(windows))]
@@ -56,5 +60,6 @@ mod tests {
             Err(PlatformError::Unsupported("to_trash"))
         ));
         assert!(platform.requires_admin(Path::new("/tmp/foo")));
+        assert_eq!(platform.config_dir(), None);
     }
 }

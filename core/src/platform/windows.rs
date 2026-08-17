@@ -28,6 +28,8 @@ pub(super) struct WindowsPlatform {
     cache: PathBuf,
     recycle_bin: PathBuf,
     downloads: PathBuf,
+    /// アプリ設定の保存先（`%APPDATA%\pc-cleaner`）。
+    config_dir: PathBuf,
     /// 管理者権限を要すると判定する基点の一覧。
     admin_roots: Vec<PathBuf>,
 }
@@ -35,19 +37,21 @@ pub(super) struct WindowsPlatform {
 // ---- 純粋層（cfg なし。macOS 上でもコンパイル・テストされる）----
 #[cfg_attr(not(windows), allow(dead_code))]
 impl WindowsPlatform {
-    /// 5 つの基点（`%TEMP%` / `%LOCALAPPDATA%` / `%USERPROFILE%` /
-    /// `%SystemRoot%` / `%SystemDrive%`）から全フィールドを合成する。
+    /// 6 つの基点（`%TEMP%` / `%LOCALAPPDATA%` / `%USERPROFILE%` /
+    /// `%SystemRoot%` / `%SystemDrive%` / `%APPDATA%`）から全フィールドを合成する。
     fn from_dirs(
         user_temp: PathBuf,
         local_app_data: PathBuf,
         user_profile: PathBuf,
         system_root: PathBuf,
         system_drive: PathBuf,
+        app_data: PathBuf,
     ) -> Self {
         let system_temp = join_win(&system_root, "Temp");
         let cache = join_win(&local_app_data, r"Microsoft\Windows\INetCache");
         let recycle_bin = join_win(&system_drive, r"$Recycle.Bin");
         let downloads = join_win(&user_profile, "Downloads");
+        let config_dir = join_win(&app_data, "pc-cleaner");
 
         // Program Files の実パスは %ProgramFiles% 等で上書きされうるが、初版の
         // ヒューリスティックでは %SystemDrive% からの既定位置で近似する。
@@ -65,6 +69,7 @@ impl WindowsPlatform {
             cache,
             recycle_bin,
             downloads,
+            config_dir,
             admin_roots,
         }
     }
@@ -141,6 +146,9 @@ impl WindowsPlatform {
         let system_drive = env::var("SystemDrive")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("C:"));
+        let app_data = env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| join_win(&user_profile, r"AppData\Roaming"));
 
         WindowsPlatform::from_dirs(
             user_temp,
@@ -148,6 +156,7 @@ impl WindowsPlatform {
             user_profile,
             system_root,
             system_drive,
+            app_data,
         )
     }
 }
@@ -165,6 +174,10 @@ impl Platform for WindowsPlatform {
     fn requires_admin(&self, path: &Path) -> bool {
         self.is_admin_path(path)
     }
+
+    fn config_dir(&self) -> Option<PathBuf> {
+        Some(self.config_dir.clone())
+    }
 }
 
 #[cfg(windows)]
@@ -181,7 +194,17 @@ mod tests {
             PathBuf::from(r"C:\Users\alice"),
             PathBuf::from(r"C:\Windows"),
             PathBuf::from(r"C:"),
+            PathBuf::from(r"C:\Users\alice\AppData\Roaming"),
         )
+    }
+
+    #[test]
+    fn config_dir_resolves_under_app_data_roaming() {
+        let platform = fixture();
+        assert_eq!(
+            platform.config_dir,
+            PathBuf::from(r"C:\Users\alice\AppData\Roaming\pc-cleaner")
+        );
     }
 
     #[test]

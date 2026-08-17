@@ -104,6 +104,10 @@ pub trait Platform {
 
     /// `path` の削除に管理者権限が必要かどうかを判定する。
     fn requires_admin(&self, path: &Path) -> bool;
+
+    /// アプリ設定の保存先ディレクトリ（Windows では `%APPDATA%\pc-cleaner`）。
+    /// 解決できない場合は `None`（F-CFG-04）。
+    fn config_dir(&self) -> Option<PathBuf>;
 }
 
 #[cfg(test)]

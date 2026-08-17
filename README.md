@@ -37,7 +37,19 @@ pc-cleaner clean              # ゴミ箱経由で削除を実行
 pc-cleaner clean --permanent  # 確認の上、完全削除（復旧不可）
 ```
 
-`gui` crate は未実装です。進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
+egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。
+
+```sh
+cargo run -p pc-cleaner-gui
+```
+
+非Windows環境では `Platform::known_dir` が常に `None` を返すため走査結果は常に空になります。実装の目視確認用に、一時ディレクトリ配下だけで完結するサンプルデータを使う `demo` feature を用意しています（ユーザーの実ファイルには一切触れません）。
+
+```sh
+cargo run -p pc-cleaner-gui --features demo -- --demo
+```
+
+進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
 
 ## ビルド・テスト
 

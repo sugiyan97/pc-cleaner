@@ -1,0 +1,30 @@
+[package]
+name = "pc-cleaner-gui"
+description = "pc-cleaner の GUI（手動選択 UI）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pc-cleaner-gui"
+path = "src/main.rs"
+
+[dependencies]
+pc-cleaner-core = { path = "../core" }
+# 0.34 以降は MSRV 1.92（0.36 は 1.95）で workspace の rust-version = "1.85" と
+# 衝突するため、初版は MSRV 1.85 の 0.32 系に固定する。
+# toolchain 更新後に上げる（follow-up issue）。
+eframe = "0.32"
+egui = "0.32"
+# システムの日本語フォントを読み込む。OS 固有の探索は fontdb 内部に閉じており
+# gui 側に #[cfg] を持ち込まない。
+fontdb = "0.24"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# 開発用。platform::current() が UnknownPlatform になる非Windows環境でも
+# core の実コードパスを目視確認できるよう、サンドボックスの Platform 実装を
+# 有効にする（既定 off。ユーザーの実ファイルには一切触れない）。
+demo = []

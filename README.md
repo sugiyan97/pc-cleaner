@@ -25,8 +25,9 @@ Windows を優先しつつ OS 依存を隔離した、手動選択型のディ�
 | `core/src/scan.rs` | ルールの基点配下を走査し `ScanEntry` を生成する走査機能 |
 | `core/src/recommend.rs` | 安全度・経過日数から推奨可否を判定する純粋関数 |
 | `core/src/config.rs` | ユーザー設定の JSON 永続化 |
+| `core/src/delete.rs` | 「走査 → プレビュー → 実行」を型で強制する削除実行（ゴミ箱送り／ドライラン／完全削除） |
 
-`core/src/delete.rs`（削除実行）と `cli` / `gui` crate は未実装です。進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
+`cli` / `gui` crate は未実装です。進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
 
 ## ビルド・テスト
 

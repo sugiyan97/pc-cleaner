@@ -9,6 +9,9 @@ use pc_cleaner_core::{Config, Rule, Safety, ScanEntry, SkipReason, apply_rule_pr
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// CLI/GUI 共通の整形ロジック（core に集約済み）をそのまま使う。
+pub use pc_cleaner_core::human_size;
+
 /// 走査範囲。フロー①（ワンクリック掃除）とフロー②（手動レビュー）の切り替え。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -19,12 +22,10 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// CLI の `safety_scope(all)` と同一の対応（F-CLI-08 / 9.5）。
+    /// core の `safety_scope(all)` に委譲する（F-CLI-08 / 9.5：CLI の
+    /// `--all` フラグと同じ `Vec<Safety>` の組み立てを1箇所に保つ）。
     pub fn safeties(self) -> Vec<Safety> {
-        match self {
-            Scope::SafeOnly => vec![Safety::Safe],
-            Scope::All => vec![Safety::Safe, Safety::Caution, Safety::Review],
-        }
+        pc_cleaner_core::safety_scope(matches!(self, Scope::All))
     }
 
     /// 表示ラベル。
@@ -51,22 +52,6 @@ pub fn age_label(age_days: Option<u64>) -> String {
         Some(0) => "本日".to_string(),
         Some(n) => format!("{n}日"),
         None => "不明".to_string(),
-    }
-}
-
-/// バイト数を読みやすい単位に変換する（CLI の `human_size` と同一の書式）。
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-    if unit_index == 0 {
-        format!("{bytes} {}", UNITS[0])
-    } else {
-        format!("{size:.1} {}", UNITS[unit_index])
     }
 }
 
@@ -167,15 +152,6 @@ mod tests {
         assert_eq!(age_label(Some(0)), "本日");
         assert_eq!(age_label(Some(5)), "5日");
         assert_eq!(age_label(None), "不明");
-    }
-
-    #[test]
-    fn human_size_formats_common_magnitudes() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(999), "999 B");
-        assert_eq!(human_size(1024), "1.0 KB");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert_eq!(human_size(1024 * 1024 * 1024), "1.0 GB");
     }
 
     #[test]

@@ -9,8 +9,8 @@
 
 use pc_cleaner_core::platform::{self, Platform};
 use pc_cleaner_core::{
-    Config, DeleteOutcome, DeletePlan, DeleteProgress, Rule, ScanEntry, ScanProgress,
-    apply_rule_prefs, delete, rules_for_safeties, scan_with_progress,
+    Config, DeleteOutcome, DeletePlan, DeleteProgress, Rule, ScanEntry, ScanProgress, delete,
+    rules_for_safeties, scan_pipeline_with_progress,
 };
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -49,6 +49,9 @@ pub fn make_platform(demo: bool) -> Box<dyn Platform> {
 }
 
 /// `scope` に応じて走査をバックグラウンドで実行する。
+///
+/// `scan_pipeline_with_progress`（走査 + `apply_rule_prefs`）を呼ぶだけで、
+/// CLI の `scan_and_apply_prefs` と同じ core 呼び出し列を保つ（F-CLI-08）。
 pub fn spawn_scan(
     ctx: egui::Context,
     scope: Scope,
@@ -61,11 +64,11 @@ pub fn spawn_scan(
         let rules = rules_for_safeties(&scope.safeties());
         let progress_tx = tx.clone();
         let progress_ctx = ctx.clone();
-        let mut entries = scan_with_progress(platform.as_ref(), &rules, move |event| {
-            let _ = progress_tx.send(WorkerMsg::Scan(event));
-            progress_ctx.request_repaint();
-        });
-        apply_rule_prefs(&mut entries, &config);
+        let entries =
+            scan_pipeline_with_progress(platform.as_ref(), &rules, &config, move |event| {
+                let _ = progress_tx.send(WorkerMsg::Scan(event));
+                progress_ctx.request_repaint();
+            });
         let _ = tx.send(WorkerMsg::ScanDone { rules, entries });
         ctx.request_repaint();
     });

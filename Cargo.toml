@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["core"]
-# cli は #10、gui は #11 で追加する
+members = ["core", "cli"]
+# gui は #11 で追加する
 
 [workspace.package]
 version = "0.1.0"

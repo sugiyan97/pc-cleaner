@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: build and publish release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: タグと Cargo.toml の version が一致することを確認
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::タグ $GITHUB_REF_NAME と [workspace.package] version = \"$cargo_version\" が一致しません。Cargo.toml を更新してから再タグ付けしてください。"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release -p pc-cleaner-cli -p pc-cleaner-gui
+
+      - name: リリース成果物を配布用に整える
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/pc-cleaner.exe "dist/pc-cleaner-${GITHUB_REF_NAME}-windows-x86_64.exe"
+          cp target/release/pc-cleaner-gui.exe "dist/pc-cleaner-gui-${GITHUB_REF_NAME}-windows-x86_64.exe"
+
+      - name: GitHub Release を作成
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

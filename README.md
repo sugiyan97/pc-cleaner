@@ -64,6 +64,16 @@ cargo fmt --all -- --check
 
 `core` は現状 Windows 固有のゴミ箱送り実装（`trash` クレート）を Windows ターゲット限定の依存として持ちますが、`core` crate 自体は macOS / Linux 上でもビルド・テストできます（`platform/windows.rs` 以外に OS 固有コードは存在しません）。CI（GitHub Actions）は `windows-latest` 上で上記コマンドを実行します。
 
+## リリース
+
+`v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開する（署名・インストーラは対象外。`docs/roadmap.md` E3 の初版範囲）。
+
+タグの値は `Cargo.toml` の `[workspace.package] version` と一致している必要があり、一致しない場合はワークフローが失敗する。リリース手順：
+
+1. `Cargo.toml` の `[workspace.package] version` を更新するコミットを作成する
+2. `git tag v<version>` でタグを付け、`git push origin v<version>` で push する
+3. Actions が `pc-cleaner-<tag>-windows-x86_64.exe` / `pc-cleaner-gui-<tag>-windows-x86_64.exe` をビルドし、GitHub Release に添付する（リリースノートは自動生成）
+
 ## ライセンス
 
 未定。

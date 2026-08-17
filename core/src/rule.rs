@@ -106,7 +106,10 @@ pub fn builtin_rules() -> Vec<Rule> {
                 すばやく表示するためのキャッシュです。削除しても元の画像・動画そのものは\
                 消えません。次に同じフォルダを開いたときに自動的に作り直されます。"
                 .to_string(),
-            base: KnownDir::LocalAppData,
+            // 実体は %LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db
+            // のみ。LocalAppData 全体を基点にすると無関係な .db ファイルを
+            // 巻き込むため、専用の基点 ThumbnailCache に絞っている（Issue #16）。
+            base: KnownDir::ThumbnailCache,
             match_kind: MatchKind::Extension(vec!["db".to_string()]),
             needs_admin: false,
             safety: Safety::Safe,

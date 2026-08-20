@@ -6,7 +6,7 @@
 //! 読込フォールバックと同じ思想）。OS 固有のフォント探索は `fontdb`
 //! 内部に閉じており、この関数自体に `#[cfg]` は登場しない。
 
-use egui::{FontData, FontDefinitions, FontFamily};
+use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -38,7 +38,28 @@ pub fn install_japanese_font(ctx: &egui::Context) -> bool {
         let font_data = db.with_face_data(id, |bytes, index| FontData {
             font: Cow::Owned(bytes.to_vec()),
             index,
-            tweak: Default::default(),
+            // CJK フォントは既定の欧文フォントと ascent/descent が異なるため、
+            // 補正なしでは日本語のグリフが行内で上に寄る。実機のスクリーン
+            // ショットを ImageMagick で実測したところ、コンボボックスのラベル
+            // も行内のラベルも、egui がベクタ描画する（＝正しく中央にある）
+            // チェックマークや▼アイコンの中心より約 6px（Retina 2x のため
+            // 論理 3pt）上にずれていた。既定の本文サイズ 14pt に対して
+            // 3/14 ≒ 0.21 なので 0.2 を下方向（正の値）に与える。
+            //
+            // baseline_offset_factor ではなく y_offset_factor を使うのは、
+            // 前者がこのフォントの行レイアウト（行高・行間）そのものに影響し、
+            // ずれの報告がない箇所（各行の下のパス／理由の行など）まで動かして
+            // しまうため。epaint のドキュメント通り y_offset_factor は
+            // 「見た目だけを動かしテキストレイアウトには影響しない」ので、
+            // 同じ行内の兄弟ウィジェットに対する描画位置のずれという今回の
+            // 症状に対して副作用が小さい。以前試した baseline_offset_factor:
+            // -0.2 は補正方向が逆（さらに上へ）で悪化させていた。
+            tweak: FontTweak {
+                scale: 1.0,
+                y_offset_factor: 0.2,
+                y_offset: 0.0,
+                baseline_offset_factor: 0.0,
+            },
         });
         let Some(font_data) = font_data else {
             continue;

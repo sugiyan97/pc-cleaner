@@ -18,6 +18,11 @@ use std::sync::mpsc::Receiver;
 use crate::task::{self, WorkerMsg};
 use crate::view::{self, Scope};
 
+/// 上下左パネル（ツールバー・サイドバー・ステータスバー）の背景色。
+/// 既定ではどのパネルも同じ `panel_fill` になり全体が単色に見えるため、
+/// 中央パネル（白）より少し暗いグレーにして領域を分かりやすくする。
+const CHROME_BG: egui::Color32 = egui::Color32::from_rgb(233, 236, 240);
+
 enum Task {
     Idle,
     Scanning {
@@ -250,54 +255,61 @@ impl eframe::App for App {
 
 impl App {
     fn ui_top(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("pc-cleaner");
-                ui.separator();
-                let busy = self.is_busy();
-                ui.add_enabled_ui(!busy, |ui| {
-                    let mut changed = false;
-                    for scope in [Scope::SafeOnly, Scope::All] {
-                        if ui
-                            .radio_value(&mut self.scope, scope, scope.label())
-                            .changed()
-                        {
+        // 既定では上下左パネルも中央と同じ panel_fill になり、全体が単色に
+        // 見えてしまう（ユーザー指摘）。中央パネルより少し暗いグレーにして
+        // 領域の区切りを分かりやすくする。
+        let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
+        egui::TopBottomPanel::top("top")
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("pc-cleaner");
+                    ui.separator();
+                    let busy = self.is_busy();
+                    ui.add_enabled_ui(!busy, |ui| {
+                        let mut changed = false;
+                        for scope in [Scope::SafeOnly, Scope::All] {
+                            if ui
+                                .radio_value(&mut self.scope, scope, scope.label())
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                        if ui.button("再走査").clicked() {
                             changed = true;
                         }
-                    }
-                    if ui.button("再走査").clicked() {
-                        changed = true;
-                    }
-                    if changed {
-                        self.start_scan(ctx);
+                        if changed {
+                            self.start_scan(ctx);
+                        }
+                    });
+                    match &self.task {
+                        Task::Scanning {
+                            rule_id,
+                            files_scanned,
+                        } => {
+                            ui.spinner();
+                            ui.label(format!(
+                                "走査中: {} … {files_scanned} 件",
+                                rule_id.as_deref().unwrap_or("準備中")
+                            ));
+                        }
+                        Task::Deleting { done, total } => {
+                            ui.spinner();
+                            ui.label(format!("削除中: {done} / {total} 件"));
+                        }
+                        Task::Idle => {}
                     }
                 });
-                match &self.task {
-                    Task::Scanning {
-                        rule_id,
-                        files_scanned,
-                    } => {
-                        ui.spinner();
-                        ui.label(format!(
-                            "走査中: {} … {files_scanned} 件",
-                            rule_id.as_deref().unwrap_or("準備中")
-                        ));
-                    }
-                    Task::Deleting { done, total } => {
-                        ui.spinner();
-                        ui.label(format!("削除中: {done} / {total} 件"));
-                    }
-                    Task::Idle => {}
+                for notice in &self.notices {
+                    ui.colored_label(ui.visuals().warn_fg_color, notice);
                 }
             });
-            for notice in &self.notices {
-                ui.colored_label(ui.visuals().warn_fg_color, notice);
-            }
-        });
     }
 
     fn ui_side(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("rules").show(ctx, |ui| {
+        let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
+        egui::SidePanel::left("rules").frame(frame).show(ctx, |ui| {
             ui.heading("ルール別の既定");
             ui.label("常に選択 / 除外 / 毎回確認(推奨に従う)を設定できます。");
             ui.separator();
@@ -384,7 +396,8 @@ impl App {
         let mut entries = std::mem::take(&mut self.entries);
         let mut plan_dirty = false;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let frame = egui::Frame::central_panel(&ctx.style()).fill(egui::Color32::WHITE);
+        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if entries.is_empty() && !busy {
                     ui.label("対象なし。");
@@ -397,8 +410,12 @@ impl App {
                             plan_dirty = true;
                         }
                         if let Some(safety) = safety {
+                            // 「安全」も注意/要確認と同じく意味を持つ色で示す。
+                            // 既定の weak_text_color は意図的に低コントラストで
+                            // 読みづらいため、明示的な緑を使う。
+                            const SAFE_COLOR: egui::Color32 = egui::Color32::from_rgb(21, 115, 71);
                             let color = match safety {
-                                pc_cleaner_core::Safety::Safe => ui.visuals().weak_text_color(),
+                                pc_cleaner_core::Safety::Safe => SAFE_COLOR,
                                 pc_cleaner_core::Safety::Caution => ui.visuals().warn_fg_color,
                                 pc_cleaner_core::Safety::Review => ui.visuals().error_fg_color,
                             };
@@ -410,9 +427,10 @@ impl App {
                         if let Some(hint) = exclusion_map.get(&entry.path) {
                             ui.colored_label(ui.visuals().warn_fg_color, *hint);
                         }
-                        ui.label(entry.path.display().to_string())
-                            .on_hover_text(entry.path.display().to_string());
                     });
+                    // パスは行内に置くと横幅を超えて見切れるため、独立した行に
+                    // 出して CentralPanel の幅に収める。
+                    ui.small(entry.path.display().to_string());
                     if !entry.reason.is_empty() {
                         ui.small(format!("理由: {}", entry.reason));
                     }
@@ -447,7 +465,10 @@ impl App {
         let mut confirm_clicked = false;
         let mut plan_dirty = false;
 
-        egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+        let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
+        egui::TopBottomPanel::bottom("bottom")
+            .frame(frame)
+            .show(ctx, |ui| {
             if let Some((item_count, total_size, is_empty, excluded_len, needs_permanent)) =
                 plan_summary
             {

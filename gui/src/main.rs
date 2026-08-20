@@ -29,6 +29,9 @@ fn main() -> eframe::Result<()> {
         "pc-cleaner",
         options,
         Box::new(move |cc| {
+            // 既定の暗いテーマは文字と背景のコントラストが弱く読みづらいため、
+            // 明るいテーマを既定にする（F-GUI-01 の視認性）。
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
             if !fonts::install_japanese_font(&cc.egui_ctx) {
                 eprintln!("日本語フォントが見つかりませんでした。表示が崩れる場合があります。");
             }

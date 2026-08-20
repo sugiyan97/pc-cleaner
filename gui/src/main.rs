@@ -31,7 +31,14 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             // 既定の暗いテーマは文字と背景のコントラストが弱く読みづらいため、
             // 明るいテーマを既定にする（F-GUI-01 の視認性）。
-            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            let mut visuals = egui::Visuals::light();
+            // Visuals::light() は非ホバー時のボタン／チェックボックス／
+            // コンボボックス（inactive）に枠線を持たない（bg_stroke が
+            // 既定値のまま）ため、背景色との差が薄いパネル上では輪郭が
+            // 分かりづらい。常に薄いグレーの枠を付けて境界を分かりやすくする。
+            visuals.widgets.inactive.bg_stroke =
+                egui::Stroke::new(1.0, egui::Color32::from_gray(170));
+            cc.egui_ctx.set_visuals(visuals);
             if !fonts::install_japanese_font(&cc.egui_ctx) {
                 eprintln!("日本語フォントが見つかりませんでした。表示が崩れる場合があります。");
             }

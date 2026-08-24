@@ -11,14 +11,14 @@ Windows を優先しつつ OS 依存を隔離した、手動選択型のディ�
 - **OS 依存を閉じ込める**：OS 固有の知識は `Platform` trait の裏に隠蔽し、固有実装（現状は Windows）を `core/src/platform/windows.rs` の1ファイルに隔離する。
 - **CLI/GUI で挙動を共有する**：判定・走査・削除ロジックは UI 非依存の `core` crate に集約し、CLI・GUI はいずれも `core` を呼び出すだけの薄い層とする。
 
-詳細は [`docs/requirements.md`](docs/requirements.md)（要件定義書）を参照してください。初版スコープ外の将来対応は [`docs/roadmap.md`](docs/roadmap.md) にまとめています。
+詳細は [`docs/requirements.md`](docs/requirements.md)（要件定義書）を参照してください。初版スコープ外の将来対応は同書「8. 将来拡張要件」にまとめており、個別の項目は [Issues](https://github.com/sugiyan97/pc-cleaner/issues) で管理しています。
 
 ## インストール（Windows）
 
 Rust のビルド環境は不要です。[Releases](https://github.com/sugiyan97/pc-cleaner/releases) ページから最新版の実行ファイルをダウンロードし、そのまま実行してください（インストーラなし、単一の `.exe`）。
 
-- `pc-cleaner-<version>-windows-x86_64.exe` … CLI（検証・自動化用）
-- `pc-cleaner-gui-<version>-windows-x86_64.exe` … GUI（手動選択 UI。通常はこちらを使う）
+- `pc-cleaner-<tag>-windows-x86_64.exe` … CLI（検証・自動化用）
+- `pc-cleaner-gui-<tag>-windows-x86_64.exe` … GUI（手動選択 UI。通常はこちらを使う）
 
 署名は行っていないため、初回起動時に Windows Defender SmartScreen の警告が出ることがあります。ソースからビルドしたい場合、または Windows 以外の環境で `core` を使う場合は以下の「開発」を参照してください。
 
@@ -65,7 +65,7 @@ cargo run -p pc-cleaner-gui
 cargo run -p pc-cleaner-gui --features demo -- --demo
 ```
 
-進捗は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理しています。
+初版実装は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理し、完了済みです。以降の不具合対応・将来対応は [Issues](https://github.com/sugiyan97/pc-cleaner/issues) で管理しています。
 
 ### ビルド・テスト
 
@@ -82,7 +82,7 @@ cargo fmt --all -- --check
 
 ### リリース手順（メンテナ向け）
 
-`v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開する（上記「インストール」の配布物はここで作られる。署名・インストーラは対象外。`docs/roadmap.md` E3 の初版範囲）。
+`v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開する（上記「インストール」の配布物はここで作られる。署名・インストーラは対象外。`docs/requirements.md`「8. 将来拡張要件」E3 の初版範囲）。
 
 タグの値は `Cargo.toml` の `[workspace.package] version` と一致している必要があり、一致しない場合はワークフローが失敗する。リリース手順：
 

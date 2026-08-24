@@ -4,6 +4,7 @@ description = "pc-cleaner の GUI（手動選択 UI）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "pc-cleaner-gui"

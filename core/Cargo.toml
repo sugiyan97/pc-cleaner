@@ -4,6 +4,7 @@ description = "pc-cleaner のロジック本体（UI 非依存）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 # 走査（#5）は std のみで実装したため追加依存なし

@@ -92,4 +92,4 @@ cargo fmt --all -- --check
 
 ## ライセンス
 
-未定。
+[MIT](LICENSE)

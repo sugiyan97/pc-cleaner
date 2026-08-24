@@ -464,6 +464,7 @@ impl App {
         let busy = self.is_busy();
         let mut confirm_clicked = false;
         let mut plan_dirty = false;
+        let mut clear_outcome_clicked = false;
 
         let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
         egui::TopBottomPanel::bottom("bottom")
@@ -517,19 +518,52 @@ impl App {
             if let Some(outcome) = &self.last_outcome {
                 ui.separator();
                 if outcome.dry_run {
-                    ui.label("ドライランのため削除は行われていません。");
+                    ui.horizontal(|ui| {
+                        ui.label("ドライランのため削除は行われていません。");
+                        if ui.button("結果をクリア").clicked() {
+                            clear_outcome_clicked = true;
+                        }
+                    });
                 } else {
-                    ui.label(format!(
-                        "削除完了: 成功 {} 件、失敗 {} 件、解放 {}",
-                        outcome.deleted,
-                        outcome.failed,
-                        view::human_size(outcome.freed_bytes)
-                    ));
-                    for (path, message) in &outcome.failures {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            format!("失敗: {} — {message}", path.display()),
-                        );
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "削除完了: 成功 {} 件、失敗 {} 件、解放 {}",
+                            outcome.deleted,
+                            outcome.failed,
+                            view::human_size(outcome.freed_bytes)
+                        ));
+                        if ui.button("結果をクリア").clicked() {
+                            clear_outcome_clicked = true;
+                        }
+                    });
+                    if !outcome.failures.is_empty() {
+                        let groups = view::group_failures(&outcome.failures);
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .id_salt("outcome_failures")
+                            .show(ui, |ui| {
+                                for (i, (message, paths)) in groups.iter().enumerate() {
+                                    egui::CollapsingHeader::new(format!(
+                                        "失敗: {message}（{}件）",
+                                        paths.len()
+                                    ))
+                                    .id_salt(("outcome_failure_group", i))
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        egui::ScrollArea::vertical()
+                                            .max_height(120.0)
+                                            .id_salt(("outcome_failure_paths", i))
+                                            .show(ui, |ui| {
+                                                for path in paths {
+                                                    ui.colored_label(
+                                                        ui.visuals().error_fg_color,
+                                                        path.display().to_string(),
+                                                    );
+                                                }
+                                            });
+                                    });
+                                }
+                            });
                     }
                 }
             }
@@ -540,6 +574,9 @@ impl App {
         }
         if plan_dirty {
             self.plan_dirty = true;
+        }
+        if clear_outcome_clicked {
+            self.last_outcome = None;
         }
     }
 

@@ -126,6 +126,31 @@ pub fn exclusion_label(reason: pc_cleaner_core::ExclusionReason) -> Option<&'sta
     }
 }
 
+/// 削除失敗を message ごとにグルーピングする。多くの場合、失敗は共通の
+/// 原因（同じメッセージ）に集約されるため、1 ファイル 1 行の羅列ではなく
+/// 「メッセージ（件数）」単位にまとめて表示する（#35）。
+///
+/// 件数の多いグループを先に表示する。
+pub fn group_failures(failures: &[(PathBuf, String)]) -> Vec<(String, Vec<PathBuf>)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for (path, message) in failures {
+        groups
+            .entry(message.clone())
+            .or_insert_with(|| {
+                order.push(message.clone());
+                Vec::new()
+            })
+            .push(path.clone());
+    }
+    let mut result: Vec<(String, Vec<PathBuf>)> = order
+        .into_iter()
+        .map(|message| (message.clone(), groups.remove(&message).unwrap_or_default()))
+        .collect();
+    result.sort_by_key(|(_, paths)| std::cmp::Reverse(paths.len()));
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +241,26 @@ mod tests {
 
         assert!(!entries[0].selected, "対象ルールには反映される");
         assert!(entries[1].selected, "他ルールの選択は変わらない");
+    }
+
+    #[test]
+    fn group_failures_groups_by_message_and_sorts_by_count_desc() {
+        let failures = vec![
+            (PathBuf::from("/a"), "使用中".to_string()),
+            (PathBuf::from("/b"), "権限不足".to_string()),
+            (PathBuf::from("/c"), "使用中".to_string()),
+            (PathBuf::from("/d"), "使用中".to_string()),
+        ];
+        let groups = group_failures(&failures);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, "使用中");
+        assert_eq!(groups[0].1.len(), 3);
+        assert_eq!(groups[1].0, "権限不足");
+        assert_eq!(groups[1].1.len(), 1);
+    }
+
+    #[test]
+    fn group_failures_handles_empty_input() {
+        assert!(group_failures(&[]).is_empty());
     }
 }

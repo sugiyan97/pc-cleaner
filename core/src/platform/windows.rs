@@ -129,6 +129,40 @@ fn is_under(path: &str, base: &str) -> bool {
 
 // ---- OS バインディング層（Windows のみ）----
 
+/// `trash::delete` が返す `trash::Error` を、ユーザーが読める日本語の文へ翻訳する。
+///
+/// `trash::Error` の `Display` は常に Debug ダンプ（`Error during a
+/// \`trash\` operation: {self:?}`）を出すため、GUI/CLI にそのまま出すと
+/// 判読不能になる（#35）。ここでバリアントごとに自然文へ変換し、
+/// `PlatformError::Trash(String)` にはこの結果だけを渡す。
+#[cfg(windows)]
+fn trash_error_message(err: &trash::Error) -> String {
+    match err {
+        trash::Error::TargetedRoot => {
+            "ドライブ直下やルートフォルダは安全のためゴミ箱に送れません。".to_string()
+        }
+        trash::Error::CouldNotAccess { target } => format!(
+            "{target} にアクセスできませんでした。別のアプリで使用中か、アクセス権限が不足している可能性があります。"
+        ),
+        trash::Error::Os { code, description } => format!(
+            "OS がゴミ箱操作を拒否しました（コード {code}: {description}）。他のアプリで使用中でないか、アクセス権限を確認してください。"
+        ),
+        trash::Error::CanonicalizePath { original } => format!(
+            "{} のパスを解決できませんでした。ファイルが移動または削除された可能性があります。",
+            original.display()
+        ),
+        trash::Error::ConvertOsString { .. } => {
+            "ファイル名に扱えない文字が含まれているため処理できませんでした。".to_string()
+        }
+        trash::Error::Unknown { description } => format!(
+            "ゴミ箱への移動に失敗しました（{description}）。別のアプリがファイルを使用しているか、アクセス権限がない可能性があります。しばらく待つか、該当のアプリを閉じてから再試行してください。"
+        ),
+        // RestoreCollision / RestoreTwins は復元専用でゴミ箱送りでは発生しない。
+        // 将来クレートが分岐を増やしても壊れないよう汎用文にフォールバックする。
+        _ => "ゴミ箱への移動中に予期しないエラーが発生しました。".to_string(),
+    }
+}
+
 #[cfg(windows)]
 impl WindowsPlatform {
     pub(super) fn new() -> Self {
@@ -172,7 +206,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn to_trash(&self, path: &Path) -> Result<()> {
-        trash::delete(path).map_err(|e| PlatformError::Trash(e.to_string()))
+        trash::delete(path).map_err(|e| PlatformError::Trash(trash_error_message(&e)))
     }
 
     fn requires_admin(&self, path: &Path) -> bool {
@@ -270,5 +304,48 @@ mod tests {
     fn requires_admin_matches_base_directory_itself() {
         let platform = fixture();
         assert!(platform.is_admin_path(Path::new(r"C:\Windows")));
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod trash_error_tests {
+    use super::trash_error_message;
+
+    #[test]
+    fn unknown_variant_produces_actionable_japanese_text() {
+        let err = trash::Error::Unknown {
+            description: "Some operations were aborted".to_string(),
+        };
+        let msg = trash_error_message(&err);
+        assert!(msg.contains("別のアプリ") || msg.contains("アクセス権限"));
+        assert!(!msg.contains("Error during a `trash` operation"));
+        assert!(!msg.contains("Unknown {"));
+    }
+
+    #[test]
+    fn os_variant_includes_error_code() {
+        let err = trash::Error::Os {
+            code: 5,
+            description: "Access is denied.".to_string(),
+        };
+        let msg = trash_error_message(&err);
+        assert!(msg.contains('5'));
+    }
+
+    #[test]
+    fn targeted_root_explains_refusal() {
+        let msg = trash_error_message(&trash::Error::TargetedRoot);
+        assert!(!msg.is_empty());
+        assert!(!msg.contains("TargetedRoot"));
+    }
+
+    #[test]
+    fn could_not_access_mentions_target() {
+        let err = trash::Error::CouldNotAccess {
+            target: r"C:\foo\bar.tmp".to_string(),
+        };
+        let msg = trash_error_message(&err);
+        assert!(msg.contains(r"C:\foo\bar.tmp"));
     }
 }

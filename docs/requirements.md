@@ -114,7 +114,7 @@ pc-cleaner/
 
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
 - `Platform` trait は次の 5 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）。
-- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、要管理者。A1 / Issue #40 で有効化済み）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）、`WindowsUpdateCache`（`%SystemRoot%\SoftwareDistribution\Download`、要管理者。A3 / Issue #42）を持つこと。
+- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、要管理者。A1 / Issue #40 で有効化済み）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）、`WindowsUpdateCache`（`%SystemRoot%\SoftwareDistribution\Download`、要管理者。A3 / Issue #42）、`DeliveryOptimizationCache`（`%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`、要管理者。A4 / Issue #43）を持つこと。
 - ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
 - `platform/windows.rs` に入れてよいのはパス解決とゴミ箱送りのみとし、ルールとロジックは OS 非依存のまま保つこと。
@@ -228,6 +228,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | `old_downloads` | 古いダウンロード（90 日超） | `Downloads` | Review | 有効（既定 OFF・確認前提） |
 | `system_temp` | `C:\Windows\Temp` | `SystemTemp` | Review（要管理者） | `needs_admin = true`。昇格していない場合のみフィルタ除外（A1 / Issue #40） |
 | `windows_update_cache` | Windows Update のダウンロード済みファイル | `WindowsUpdateCache` | Review（要管理者） | `needs_admin = true`。昇格していない場合のみフィルタ除外（A3 / Issue #42）。基点は `SoftwareDistribution\Download` に限定し、更新履歴データベース（`DataStore`）は対象にしない |
+| `delivery_optimization_cache` | 配信の最適化ファイル | `DeliveryOptimizationCache` | Review（要管理者） | `needs_admin = true`。昇格していない場合のみフィルタ除外（A4 / Issue #43）。`DOModifyCacheDrive` でキャッシュ位置を変更している環境では走査結果が0件になる（既知の制約） |
 
 - `old_logs` の経過日数しきい値は 180 日、`old_downloads` は 90 日とし、初版ではルールにハードコードすること。ただし将来 `Config` へ移せる構造とすること。
 - 各ルールは安定した識別子（`id`）、表示名（`label`）、説明文（`description`）を必ず持つこと。
@@ -367,7 +368,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | A1 | 管理者権限領域の対応 | `C:\Windows\Temp`、`SoftwareDistribution\Download` 等。`needs_admin=true` ルールを有効化 | 権限昇格フロー | 高（対応済み。`system_temp` を有効化。Issue #40。`SoftwareDistribution\Download` 等の個別ルール追加は A3/A4 で行う） |
 | A2 | 権限昇格フロー | UAC 昇格 or 昇格プロセスへの委譲。`Platform` trait に `elevate()` を追加 | — | 高（対応済み。5.8 / Issue #41） |
 | A3 | Windows Update キャッシュ | 更新済みパッケージの残骸。効果が大きいが要管理者 | A1 | 中（対応済み。`windows_update_cache` を追加。Issue #42） |
-| A4 | 配信最適化ファイル | Delivery Optimization のキャッシュ | A1 | 低 |
+| A4 | 配信最適化ファイル | Delivery Optimization のキャッシュ | A1 | 低（対応済み。`delivery_optimization_cache` を追加。Issue #43。実パスは Issue 記載の `%ProgramData%` ではなく `%SystemRoot%\ServiceProfiles\NetworkService\...` である点に注意） |
 
 初版依存：初版で `needs_admin` フラグとフィルタ除外、`requires_admin()` を実装しておくこと（フロー④ 2a）。
 

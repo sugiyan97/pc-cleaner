@@ -63,6 +63,20 @@ pub enum KnownDir {
     /// Issue #42）。`needs_admin = true`。昇格していない場合のみフィルタ
     /// 除外される（A1 / Issue #40 と同じ仕組み）。
     WindowsUpdateCache,
+    /// 配信の最適化（Delivery Optimization）のキャッシュ（Windows では
+    /// `%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`）。
+    ///
+    /// NetworkService サービスアカウントのローカルプロファイル配下にあり、
+    /// `%ProgramData%` ではない（`cleanmgr` の「配信の最適化ファイル」と
+    /// 同じ実体。A4 / Issue #43 の実装時に確認・訂正した）。`needs_admin =
+    /// true`。昇格していない場合のみフィルタ除外される（A1 / Issue #40 と
+    /// 同じ仕組み）。
+    ///
+    /// 既知の制約：グループポリシー `DOModifyCacheDrive` でキャッシュの
+    /// 保存先を変更している環境では、この固定パスは実体と一致せず走査結果が
+    /// 0件になる（エラーにはならない）。レジストリ照会による追従は本対応の
+    /// スコープ外とし、必要になれば別 Issue とする。
+    DeliveryOptimizationCache,
 }
 
 /// [`Platform`] の操作が失敗した際のエラー。

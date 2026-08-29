@@ -237,6 +237,32 @@ pub fn builtin_rules() -> Vec<Rule> {
             safety: Safety::Review,
             age_threshold_days: None,
         },
+        Rule {
+            id: "delivery_optimization_cache".to_string(),
+            label: "配信の最適化ファイル".to_string(),
+            description: "Windows Update やストアアプリの更新を、同じネットワーク上の\
+                他の PC と共有するために保存されているファイルです。削除しても、\
+                既に適用済みの更新には影響しません。必要になれば自動的に作り直されます。\
+                削除には管理者権限が必要です。"
+                .to_string(),
+            // 実パスは NetworkService サービスアカウントのローカルプロファイル
+            // 配下にある（KnownDir::DeliveryOptimizationCache の doc コメント
+            // 参照）。グループポリシー DOModifyCacheDrive でキャッシュの保存先を
+            // 変更している環境では、この固定パスは実体と一致せず走査結果が
+            // 0件になる（エラーにはしない。他の基点が解決できないときと同じ
+            // 「安全側に倒して黙って空にする」方針を踏襲する）。レジストリ
+            // 照会による追従は本対応のスコープ外とし、必要になれば別 Issue と
+            // する（A4 / Issue #43）。
+            base: KnownDir::DeliveryOptimizationCache,
+            match_kind: MatchKind::All,
+            needs_admin: true,
+            // system_temp / windows_update_cache と同じ理由で Review（既定
+            // OFF・自動推奨なし）。解放できる容量が大きいことは「既定 ON に
+            // してよい理由」にはならない（NF-SAF-01）。この Safety を Safe や
+            // Caution に上げてはならない。
+            safety: Safety::Review,
+            age_threshold_days: None,
+        },
     ]
 }
 
@@ -277,6 +303,7 @@ mod tests {
             "old_downloads",
             "system_temp",
             "windows_update_cache",
+            "delivery_optimization_cache",
         ]
         .into_iter()
         .collect();
@@ -310,7 +337,14 @@ mod tests {
             .map(|r| r.id.as_str())
             .collect();
         admin_ids.sort_unstable();
-        assert_eq!(admin_ids, vec!["system_temp", "windows_update_cache"]);
+        assert_eq!(
+            admin_ids,
+            vec![
+                "delivery_optimization_cache",
+                "system_temp",
+                "windows_update_cache",
+            ]
+        );
 
         let not_elevated = scannable_rules(false);
         assert_eq!(not_elevated.len(), rules.len() - admin_ids.len());
@@ -331,8 +365,8 @@ mod tests {
     fn admin_rules_are_all_review() {
         // needs_admin なルールはすべて Safety::Review であること。管理者
         // 領域を既定 ON にしないための原則（system_temp のコメント参照）が、
-        // ルールが増えても崩れないことの一般化した退行テスト（A3 /
-        // Issue #42）。
+        // ルールが増えても崩れないことの一般化した退行テスト（A3 / Issue #42、
+        // A4 / Issue #43）。
         for rule in builtin_rules().into_iter().filter(|r| r.needs_admin) {
             assert_eq!(
                 rule.safety,

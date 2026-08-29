@@ -213,6 +213,7 @@ mod tests {
         assert!(rules.iter().all(|r| r.needs_admin));
         assert!(rules.iter().any(|r| r.id == "system_temp"));
         assert!(rules.iter().any(|r| r.id == "windows_update_cache"));
+        assert!(rules.iter().any(|r| r.id == "delivery_optimization_cache"));
     }
 
     #[test]

@@ -86,6 +86,7 @@ impl Platform for DemoPlatform {
             KnownDir::Downloads => "downloads",
             KnownDir::ThumbnailCache => "thumbnail_cache",
             KnownDir::WindowsUpdateCache => return None,
+            KnownDir::DeliveryOptimizationCache => return None, // needs_admin のため実際には呼ばれない
         };
         Some(self.root.join(sub))
     }

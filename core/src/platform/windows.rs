@@ -49,6 +49,7 @@ pub(super) struct WindowsPlatform {
     downloads: PathBuf,
     thumbnail_cache: PathBuf,
     windows_update_cache: PathBuf,
+    delivery_optimization_cache: PathBuf,
     /// アプリ設定の保存先（`%APPDATA%\pc-cleaner`）。
     config_dir: PathBuf,
     /// 管理者権限を要すると判定する基点の一覧。
@@ -74,6 +75,10 @@ impl WindowsPlatform {
         let downloads = join_win(&user_profile, "Downloads");
         let thumbnail_cache = join_win(&local_app_data, r"Microsoft\Windows\Explorer");
         let windows_update_cache = join_win(&system_root, r"SoftwareDistribution\Download");
+        let delivery_optimization_cache = join_win(
+            &system_root,
+            r"ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache",
+        );
         let config_dir = join_win(&app_data, "pc-cleaner");
 
         // Program Files の実パスは %ProgramFiles% 等で上書きされうるが、初版の
@@ -94,6 +99,7 @@ impl WindowsPlatform {
             downloads,
             thumbnail_cache,
             windows_update_cache,
+            delivery_optimization_cache,
             config_dir,
             admin_roots,
         }
@@ -110,6 +116,7 @@ impl WindowsPlatform {
             KnownDir::Downloads => self.downloads.clone(),
             KnownDir::ThumbnailCache => self.thumbnail_cache.clone(),
             KnownDir::WindowsUpdateCache => self.windows_update_cache.clone(),
+            KnownDir::DeliveryOptimizationCache => self.delivery_optimization_cache.clone(),
         }
     }
 
@@ -459,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn known_dir_resolves_all_eight_kinds() {
+    fn known_dir_resolves_all_nine_kinds() {
         let platform = fixture();
         assert_eq!(
             platform.resolve(KnownDir::UserTemp),
@@ -493,6 +500,12 @@ mod tests {
             platform.resolve(KnownDir::WindowsUpdateCache),
             PathBuf::from(r"C:\Windows\SoftwareDistribution\Download")
         );
+        assert_eq!(
+            platform.resolve(KnownDir::DeliveryOptimizationCache),
+            PathBuf::from(
+                r"C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache"
+            )
+        );
     }
 
     #[test]
@@ -515,6 +528,20 @@ mod tests {
         let platform = fixture();
         assert!(platform.is_admin_path(Path::new(
             r"C:\Windows\SoftwareDistribution\Download\update.cab"
+        )));
+    }
+
+    /// A1（Issue #40）の昇格ゲーティングが A4（Issue #43）の新ルールにも
+    /// そのまま効くための前提条件を固定する回帰テスト。上の
+    /// `requires_admin_detects_windows_update_cache` と同じ狙い：
+    /// `delivery_optimization_cache` の基点は `system_root`（`admin_roots` に
+    /// 含まれる）の配下に合成しているため、`admin_roots` / `is_admin_path` を
+    /// 変更しなくても管理者領域として判定されるはずである。
+    #[test]
+    fn requires_admin_detects_delivery_optimization_cache() {
+        let platform = fixture();
+        assert!(platform.is_admin_path(Path::new(
+            r"C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\some.tmp"
         )));
     }
 

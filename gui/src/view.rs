@@ -209,9 +209,10 @@ mod tests {
     #[test]
     fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
         let rules = future_rules(false);
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].id, "system_temp");
-        assert!(rules[0].needs_admin);
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|r| r.needs_admin));
+        assert!(rules.iter().any(|r| r.id == "system_temp"));
+        assert!(rules.iter().any(|r| r.id == "windows_update_cache"));
     }
 
     #[test]

@@ -54,6 +54,15 @@ pub enum KnownDir {
     /// 無関係な `.db` ファイルまで巻き込むため、専用の基点として分離している
     /// （Issue #16）。
     ThumbnailCache,
+    /// Windows Update がダウンロードした更新パッケージの置き場（Windows では
+    /// `%SystemRoot%\SoftwareDistribution\Download`）。
+    ///
+    /// 基点は `SoftwareDistribution` 全体ではなく `Download` サブフォルダに
+    /// 限定する。同階層の `DataStore` は Windows Update の履歴データベースで
+    /// あり、削除すると更新履歴が壊れるため対象にしてはならない（A3 /
+    /// Issue #42）。`needs_admin = true`。昇格していない場合のみフィルタ
+    /// 除外される（A1 / Issue #40 と同じ仕組み）。
+    WindowsUpdateCache,
 }
 
 /// [`Platform`] の操作が失敗した際のエラー。

@@ -48,6 +48,7 @@ pub(super) struct WindowsPlatform {
     recycle_bin: PathBuf,
     downloads: PathBuf,
     thumbnail_cache: PathBuf,
+    windows_update_cache: PathBuf,
     /// アプリ設定の保存先（`%APPDATA%\pc-cleaner`）。
     config_dir: PathBuf,
     /// 管理者権限を要すると判定する基点の一覧。
@@ -72,6 +73,7 @@ impl WindowsPlatform {
         let recycle_bin = join_win(&system_drive, r"$Recycle.Bin");
         let downloads = join_win(&user_profile, "Downloads");
         let thumbnail_cache = join_win(&local_app_data, r"Microsoft\Windows\Explorer");
+        let windows_update_cache = join_win(&system_root, r"SoftwareDistribution\Download");
         let config_dir = join_win(&app_data, "pc-cleaner");
 
         // Program Files の実パスは %ProgramFiles% 等で上書きされうるが、初版の
@@ -91,6 +93,7 @@ impl WindowsPlatform {
             recycle_bin,
             downloads,
             thumbnail_cache,
+            windows_update_cache,
             config_dir,
             admin_roots,
         }
@@ -106,6 +109,7 @@ impl WindowsPlatform {
             KnownDir::RecycleBin => self.recycle_bin.clone(),
             KnownDir::Downloads => self.downloads.clone(),
             KnownDir::ThumbnailCache => self.thumbnail_cache.clone(),
+            KnownDir::WindowsUpdateCache => self.windows_update_cache.clone(),
         }
     }
 
@@ -455,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn known_dir_resolves_all_seven_kinds() {
+    fn known_dir_resolves_all_eight_kinds() {
         let platform = fixture();
         assert_eq!(
             platform.resolve(KnownDir::UserTemp),
@@ -485,6 +489,10 @@ mod tests {
             platform.resolve(KnownDir::ThumbnailCache),
             PathBuf::from(r"C:\Users\alice\AppData\Local\Microsoft\Windows\Explorer")
         );
+        assert_eq!(
+            platform.resolve(KnownDir::WindowsUpdateCache),
+            PathBuf::from(r"C:\Windows\SoftwareDistribution\Download")
+        );
     }
 
     #[test]
@@ -494,6 +502,20 @@ mod tests {
         assert!(platform.is_admin_path(Path::new(r"C:\Program Files\App\bin.exe")));
         assert!(platform.is_admin_path(Path::new(r"C:\ProgramData\App\config.ini")));
         assert!(!platform.is_admin_path(Path::new(r"C:\Users\alice\AppData\Local\Temp\foo.tmp")));
+    }
+
+    /// A1（Issue #40）の昇格ゲーティングが A3（Issue #42）の新ルールにも
+    /// そのまま効くための前提条件を固定する回帰テスト。`windows_update_cache`
+    /// の基点は `system_root`（`admin_roots` に含まれる）の配下に合成して
+    /// いるため、`admin_roots` / `is_admin_path` を変更しなくても管理者
+    /// 領域として判定されるはずである。ここが崩れると、A1 の「昇格済みかつ
+    /// `needs_admin` なルールのみ許可」というゲートが実質的に効かなくなる。
+    #[test]
+    fn requires_admin_detects_windows_update_cache() {
+        let platform = fixture();
+        assert!(platform.is_admin_path(Path::new(
+            r"C:\Windows\SoftwareDistribution\Download\update.cab"
+        )));
     }
 
     #[test]

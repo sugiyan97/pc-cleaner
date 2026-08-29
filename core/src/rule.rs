@@ -209,6 +209,34 @@ pub fn builtin_rules() -> Vec<Rule> {
             safety: Safety::Review,
             age_threshold_days: None,
         },
+        Rule {
+            id: "windows_update_cache".to_string(),
+            label: "Windows Update のダウンロード済みファイル".to_string(),
+            description: "Windows Update が更新プログラムを適用するためにダウンロードした\
+                ファイルの置き場です。適用済みの更新については残しておく必要がなく、\
+                必要になれば自動的に再ダウンロードされます。削除には管理者権限が必要です。\
+                更新の適用中やダウンロード中のファイルは使用中のため削除できず、\
+                失敗として報告されます。その場合は再起動後にもう一度お試しください。"
+                .to_string(),
+            // 基点は SoftwareDistribution 全体ではなく Download サブフォルダに
+            // 限定する。同階層の DataStore は更新履歴データベースであり、
+            // 削除すると更新履歴が壊れるため対象にしてはならない（A3 /
+            // Issue #42。KnownDir::WindowsUpdateCache の doc コメントも参照）。
+            //
+            // 本ルールの対応範囲はファイルの削除のみである。wuauserv
+            // （Windows Update サービス）の停止は行わない。サービス制御は
+            // このツールの責務を大きく超え、誤って行うと回復が難しいため、
+            // 意図的にスコープ外としている。
+            base: KnownDir::WindowsUpdateCache,
+            match_kind: MatchKind::All,
+            needs_admin: true,
+            // system_temp と同じ理由で Review（既定 OFF・自動推奨なし）。
+            // 解放できる容量が大きいことは「既定 ON にしてよい理由」には
+            // ならない（NF-SAF-01）。この Safety を Safe や Caution に
+            // 上げてはならない。
+            safety: Safety::Review,
+            age_threshold_days: None,
+        },
     ]
 }
 
@@ -248,6 +276,7 @@ mod tests {
             "old_logs",
             "old_downloads",
             "system_temp",
+            "windows_update_cache",
         ]
         .into_iter()
         .collect();
@@ -275,20 +304,43 @@ mod tests {
     #[test]
     fn needs_admin_rules_are_excluded_unless_elevated() {
         let rules = builtin_rules();
-        let admin_ids: Vec<&str> = rules
+        let mut admin_ids: Vec<&str> = rules
             .iter()
             .filter(|r| r.needs_admin)
             .map(|r| r.id.as_str())
             .collect();
-        assert_eq!(admin_ids, vec!["system_temp"]);
+        admin_ids.sort_unstable();
+        assert_eq!(admin_ids, vec!["system_temp", "windows_update_cache"]);
 
         let not_elevated = scannable_rules(false);
-        assert_eq!(not_elevated.len(), rules.len() - 1);
-        assert!(not_elevated.iter().all(|r| r.id != "system_temp"));
+        assert_eq!(not_elevated.len(), rules.len() - admin_ids.len());
+        assert!(
+            not_elevated
+                .iter()
+                .all(|r| !admin_ids.contains(&r.id.as_str()))
+        );
 
         let elevated = scannable_rules(true);
         assert_eq!(elevated.len(), rules.len(), "昇格時は全ルールが対象になる");
-        assert!(elevated.iter().any(|r| r.id == "system_temp"));
+        for id in &admin_ids {
+            assert!(elevated.iter().any(|r| &r.id == id));
+        }
+    }
+
+    #[test]
+    fn admin_rules_are_all_review() {
+        // needs_admin なルールはすべて Safety::Review であること。管理者
+        // 領域を既定 ON にしないための原則（system_temp のコメント参照）が、
+        // ルールが増えても崩れないことの一般化した退行テスト（A3 /
+        // Issue #42）。
+        for rule in builtin_rules().into_iter().filter(|r| r.needs_admin) {
+            assert_eq!(
+                rule.safety,
+                Safety::Review,
+                "id={} は needs_admin なのに Safety::Review でない",
+                rule.id
+            );
+        }
     }
 
     #[test]

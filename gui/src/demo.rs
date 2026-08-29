@@ -77,12 +77,15 @@ impl Platform for DemoPlatform {
     fn known_dir(&self, kind: KnownDir) -> Option<PathBuf> {
         let sub = match kind {
             KnownDir::UserTemp => "user_temp",
-            KnownDir::SystemTemp => return None, // needs_admin のため実際には呼ばれない
+            // DemoPlatform::is_elevated() は常に false のため、needs_admin な
+            // KnownDir は実際には呼ばれない（A1 / Issue #40）。
+            KnownDir::SystemTemp => return None,
             KnownDir::LocalAppData => "logs",
             KnownDir::Cache => "cache",
             KnownDir::RecycleBin => "recycle_bin",
             KnownDir::Downloads => "downloads",
             KnownDir::ThumbnailCache => "thumbnail_cache",
+            KnownDir::WindowsUpdateCache => return None,
         };
         Some(self.root.join(sub))
     }

@@ -96,15 +96,18 @@ pub enum ScanProgress {
     },
 }
 
-/// 指定した安全度のルールだけを返す。`needs_admin` なルールは常に除外する
-/// （F-SCAN-04）。
+/// 指定した安全度のルールだけを返す。`needs_admin` なルールは、`elevated`
+/// が `true`（A2 の昇格を経て管理者権限が与えられている）でない限り除外する
+/// （F-SCAN-04 / A1 / Issue #40）。
 ///
-/// フロー①（ワンクリック掃除）は `rules_for_safeties(&[Safety::Safe])`、
+/// フロー①（ワンクリック掃除）は `rules_for_safeties(&[Safety::Safe], elevated)`、
 /// フロー②（手動レビュー）は
-/// `rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review])` と
-/// 呼ぶことで、F-SCAN-06 / F-SCAN-07 を CLI/GUI 共通の同一 API で表現する。
-pub fn rules_for_safeties(safeties: &[Safety]) -> Vec<Rule> {
-    crate::rule::scannable_rules()
+/// `rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review], elevated)`
+/// と呼ぶことで、F-SCAN-06 / F-SCAN-07 を CLI/GUI 共通の同一 API で表現する。
+/// `elevated` には呼び出し側が `Platform::is_elevated()` の結果をそのまま
+/// 渡すこと（中間変数でのフラグ捏造を避ける）。
+pub fn rules_for_safeties(safeties: &[Safety], elevated: bool) -> Vec<Rule> {
+    crate::rule::scannable_rules(elevated)
         .into_iter()
         .filter(|r| safeties.contains(&r.safety))
         .collect()
@@ -238,14 +241,17 @@ struct ScanTarget<'a> {
 /// `rule` を走査対象にできるか判定し、できるなら基点を解決する。
 ///
 /// 呼び出し側は通常 [`rules_for_safeties`]（内部で `scannable_rules()` を
-/// 使う）で `needs_admin` なルールを渡さないが、誤って渡された場合の
+/// 使う）で昇格状態に応じたルールしか渡さないが、誤って渡された場合の
 /// 二次防御としてここでも再チェックする（`recommend()` が同様の再判定を
-/// 行っているのに倣う）。
+/// 行っているのに倣う）。判定は [`Rule::is_permitted`] /
+/// [`Rule::may_touch_admin_area`] に一本化する（A1 / Issue #40）。
 fn resolve_target<'a>(
     platform: &dyn Platform,
     rule: &'a Rule,
 ) -> Result<ScanTarget<'a>, SkipReason> {
-    if rule.needs_admin {
+    let elevated = platform.is_elevated();
+
+    if !rule.is_permitted(elevated) {
         return Err(SkipReason::NeedsAdmin);
     }
     if matches!(rule.match_kind, MatchKind::OlderThan) && rule.age_threshold_days.is_none() {
@@ -254,7 +260,12 @@ fn resolve_target<'a>(
     let base = platform
         .known_dir(rule.base)
         .ok_or(SkipReason::UnknownBase)?;
-    if platform.requires_admin(&base) {
+    // 基点が管理者権限領域だった場合に通すのは、管理者権限を要すると宣言した
+    // ルールが実際に昇格済みのときだけ。昇格していても needs_admin == false
+    // のルールについては従来どおり拒否する（環境変数の設定ミス等で一般
+    // ルールの基点が管理者領域へ解決された場合の安全網を、昇格で無効化しない
+    // ため。9.5 二次防御 / Issue #40）。
+    if platform.requires_admin(&base) && !rule.may_touch_admin_area(elevated) {
         return Err(SkipReason::NeedsAdmin);
     }
     Ok(ScanTarget { rule, base })
@@ -524,7 +535,7 @@ fn matches_extension(path: &Path, extensions: &[String]) -> bool {
 mod tests {
     use super::*;
     use crate::platform::{KnownDir, PlatformError};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
@@ -533,17 +544,35 @@ mod tests {
     // Send 境界が不要であることの回帰テストを兼ねる。
     struct FakePlatform {
         dirs: HashMap<KnownDir, PathBuf>,
+        elevated: bool,
+        admin_paths: HashSet<PathBuf>,
     }
 
     impl FakePlatform {
         fn new() -> Self {
             FakePlatform {
                 dirs: HashMap::new(),
+                elevated: false,
+                admin_paths: HashSet::new(),
             }
         }
 
         fn with(mut self, kind: KnownDir, path: PathBuf) -> Self {
             self.dirs.insert(kind, path);
+            self
+        }
+
+        /// `Platform::is_elevated()` が `true` を返すようにする
+        /// （A1 / Issue #40 のテスト用）。
+        fn elevated(mut self) -> Self {
+            self.elevated = true;
+            self
+        }
+
+        /// `path` に対して `Platform::requires_admin()` が `true` を返す
+        /// ようにする（A1 / Issue #40 のテスト用）。
+        fn admin_path(mut self, path: PathBuf) -> Self {
+            self.admin_paths.insert(path);
             self
         }
     }
@@ -557,10 +586,11 @@ mod tests {
             Err(PlatformError::Unsupported("to_trash"))
         }
 
-        fn requires_admin(&self, _path: &Path) -> bool {
-            // UnknownPlatform とは異なり、テストでは基点自体を admin 扱いに
-            // しない（needs_admin の検証は専用のルールで行う）。
-            false
+        fn requires_admin(&self, path: &Path) -> bool {
+            // UnknownPlatform とは異なり、テストでは基点を明示的に注入しない
+            // 限り admin 扱いにしない（needs_admin の検証は専用のルールで
+            // 行う）。
+            self.admin_paths.contains(path)
         }
 
         fn config_dir(&self) -> Option<PathBuf> {
@@ -568,7 +598,7 @@ mod tests {
         }
 
         fn is_elevated(&self) -> bool {
-            false
+            self.elevated
         }
 
         fn elevate(&self, _args: &[String]) -> crate::platform::ElevateResult {
@@ -638,14 +668,23 @@ mod tests {
 
     #[test]
     fn rules_for_safeties_excludes_needs_admin_and_filters_by_safety() {
-        let safe_only = rules_for_safeties(&[Safety::Safe]);
+        let safe_only = rules_for_safeties(&[Safety::Safe], false);
         assert!(safe_only.iter().all(|r| r.safety == Safety::Safe));
         assert!(safe_only.iter().all(|r| !r.needs_admin));
         assert!(!safe_only.is_empty());
 
-        let all = rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review]);
+        let all = rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review], false);
         assert!(all.iter().all(|r| !r.needs_admin));
         assert!(all.iter().any(|r| r.id == "old_downloads"));
+    }
+
+    #[test]
+    fn rules_for_safeties_includes_needs_admin_when_elevated() {
+        let not_elevated = rules_for_safeties(&[Safety::Review], false);
+        assert!(!not_elevated.iter().any(|r| r.id == "system_temp"));
+
+        let elevated = rules_for_safeties(&[Safety::Review], true);
+        assert!(elevated.iter().any(|r| r.id == "system_temp"));
     }
 
     #[test]
@@ -766,6 +805,61 @@ mod tests {
         );
 
         assert!(scan(&platform, std::slice::from_ref(&rule)).is_empty());
+    }
+
+    #[test]
+    fn scan_includes_needs_admin_rules_when_elevated() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file_with_age(&dir.path().join("a.tmp"), b"x", 10);
+        let platform = FakePlatform::new()
+            .with(KnownDir::SystemTemp, dir.path().to_path_buf())
+            .elevated();
+        let rule = test_rule(
+            "system_temp",
+            KnownDir::SystemTemp,
+            MatchKind::All,
+            Safety::Review,
+            true,
+            None,
+        );
+
+        let entries = scan(&platform, std::slice::from_ref(&rule));
+        assert_eq!(
+            entries.len(),
+            1,
+            "昇格していれば needs_admin ルールも走査対象になる"
+        );
+    }
+
+    /// A1（Issue #40）の核心の退行テスト。`requires_admin` の二次防御は、
+    /// 昇格していても `needs_admin == false` のルールには適用され続けること
+    /// （`platform.requires_admin(path) && !platform.is_elevated()` という
+    /// 素朴な緩和ではなく、`Rule::may_touch_admin_area` を経由する「きつい側」
+    /// のゲーティングであることの確認）。
+    #[test]
+    fn admin_base_is_still_excluded_for_non_admin_rule_when_elevated() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        write_file_with_age(&base.join("a.tmp"), b"x", 10);
+        let platform = FakePlatform::new()
+            .with(KnownDir::UserTemp, base.clone())
+            .admin_path(base)
+            .elevated();
+        // needs_admin: false のルールが、環境設定ミス等で管理者領域へ解決
+        // されてしまったケースを模す。
+        let rule = test_rule(
+            "user_temp",
+            KnownDir::UserTemp,
+            MatchKind::All,
+            Safety::Safe,
+            false,
+            None,
+        );
+
+        assert!(
+            scan(&platform, std::slice::from_ref(&rule)).is_empty(),
+            "昇格していても needs_admin でないルールは管理者領域を対象にしない"
+        );
     }
 
     #[test]

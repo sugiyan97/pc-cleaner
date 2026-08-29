@@ -350,7 +350,7 @@ impl App {
             ui.separator();
 
             let mut changed_rule: Option<String> = None;
-            for rule in rule::scannable_rules() {
+            for rule in rule::scannable_rules(self.elevated) {
                 ui.label(&rule.label).on_hover_text(&rule.description);
                 let mut pref = self
                     .config
@@ -399,11 +399,14 @@ impl App {
                 ui.small(format!("保存先: {}", path.display()));
             }
 
-            ui.separator();
-            ui.heading("将来対応（管理者権限が必要）");
-            for rule in view::future_rules() {
-                ui.label(format!("🔒 {}", rule.label))
-                    .on_hover_text(&rule.description);
+            let future_rules = view::future_rules(self.elevated);
+            if !future_rules.is_empty() {
+                ui.separator();
+                ui.heading("管理者権限が必要（未対応）");
+                for rule in &future_rules {
+                    ui.label(format!("🔒 {}", rule.label))
+                        .on_hover_text(&rule.description);
+                }
             }
 
             if !self.skipped.is_empty() {

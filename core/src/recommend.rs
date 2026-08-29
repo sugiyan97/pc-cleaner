@@ -56,10 +56,15 @@ pub fn recommend(entry: &ScanEntry, rule: &Rule) -> Recommendation {
     let age_note = describe_age(entry.age_days);
 
     if rule.needs_admin {
-        // NF-SAF-05 / フロー④2a。#5 のフィルタ漏れに対する最後の防御。
+        // NF-SAF-05 / A1 / Issue #40。管理者権限領域は、昇格済みであっても
+        // 自動では推奨しない。`Safety::Review` と合わせた二重防御であり、
+        // ユーザーが明示的にチェックを入れた場合のみ対象になる。`recommend`
+        // は純粋関数の契約（F-REC-05）を守るため `Platform` を受け取らず、
+        // 昇格状態そのものは参照しない（#5 / #7 のフィルタ漏れに対する
+        // 最後の防御としての役割は変わらない）。
         return Recommendation::new(
             false,
-            "管理者権限が必要な領域のため、本バージョンでは対象外です（将来対応）。",
+            "管理者権限が必要な領域です。内容を確認したうえで、必要な場合のみ手動で選択してください。",
         );
     }
 
@@ -193,6 +198,10 @@ mod tests {
             let rec = recommend(&e, &r);
             assert!(!rec.recommended);
             assert!(rec.reason.contains("管理者権限"));
+            assert!(
+                !rec.reason.contains("将来対応"),
+                "A1（Issue #40）で対応済みのため「将来対応」の文言は残さない"
+            );
         }
     }
 

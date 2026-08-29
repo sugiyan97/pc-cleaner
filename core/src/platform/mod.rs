@@ -36,7 +36,8 @@ pub enum KnownDir {
     /// ユーザー一時ファイル領域（Windows では `%TEMP%`）。
     UserTemp,
     /// システム一時ファイル領域（Windows では `C:\Windows\Temp`）。
-    /// 将来対応 A1 まで `needs_admin = true` としてフィルタ除外される。
+    /// `needs_admin = true`。昇格していない場合のみフィルタ除外される
+    /// （A1 / Issue #40）。
     SystemTemp,
     /// ユーザーごとのアプリケーションデータ領域（Windows では `%LOCALAPPDATA%`）。
     LocalAppData,

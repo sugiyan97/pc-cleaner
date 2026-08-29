@@ -114,7 +114,7 @@ pc-cleaner/
 
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
 - `Platform` trait は次の 5 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）。
-- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、将来・要管理者）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）を持つこと。
+- `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、要管理者。A1 / Issue #40 で有効化済み）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）、`WindowsUpdateCache`（`%SystemRoot%\SoftwareDistribution\Download`、要管理者。A3 / Issue #42）を持つこと。
 - ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
 - `platform/windows.rs` に入れてよいのはパス解決とゴミ箱送りのみとし、ルールとロジックは OS 非依存のまま保つこと。
@@ -131,7 +131,7 @@ pc-cleaner/
 | F-SCAN-01 | 有効なルールの `base`（`KnownDir`）を `Platform::known_dir` で実パスへ解決し、そのパス配下を走査すること |
 | F-SCAN-02 | ルールの `match_kind` に従い対象を絞り込むこと（`All` は全件、`Extension` は指定拡張子、`OlderThan` は `age_threshold_days` と併用した経過日数判定） |
 | F-SCAN-03 | 走査結果は `ScanEntry` として保持し、少なくとも由来ルール ID・パス・サイズ・ファイル数・最終更新日時・経過日数（`age_days`）を集計すること |
-| F-SCAN-04 | `needs_admin = true` のルールは、初版では走査対象からフィルタ除外すること |
+| F-SCAN-04 | `needs_admin = true` のルールは、昇格していない場合は走査対象からフィルタ除外すること。昇格している場合（A1 / Issue #40）は対象に含めること |
 | F-SCAN-05 | 走査は基点ごとに並列実行できること。長時間となる走査については進捗を通知できること |
 | F-SCAN-06 | ワンクリック掃除の動線では、Safe ルールの基点だけを走査対象とできること |
 | F-SCAN-07 | 手動レビューの動線では、Safe / Caution / Review のすべてのルールを走査し、各エントリにメタ情報を付与すること |
@@ -226,7 +226,8 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | `recycle_bin` | ゴミ箱 | `RecycleBin` | Caution | 有効（既定 OFF） |
 | `old_logs` | 古いログ（180 日超） | `LocalAppData` | Caution | 有効（既定 OFF） |
 | `old_downloads` | 古いダウンロード（90 日超） | `Downloads` | Review | 有効（既定 OFF・確認前提） |
-| `system_temp` | `C:\Windows\Temp` | `SystemTemp` | （将来・要管理者） | 定義のみ。`needs_admin = true` としてフィルタ除外 |
+| `system_temp` | `C:\Windows\Temp` | `SystemTemp` | Review（要管理者） | `needs_admin = true`。昇格していない場合のみフィルタ除外（A1 / Issue #40） |
+| `windows_update_cache` | Windows Update のダウンロード済みファイル | `WindowsUpdateCache` | Review（要管理者） | `needs_admin = true`。昇格していない場合のみフィルタ除外（A3 / Issue #42）。基点は `SoftwareDistribution\Download` に限定し、更新履歴データベース（`DataStore`）は対象にしない |
 
 - `old_logs` の経過日数しきい値は 180 日、`old_downloads` は 90 日とし、初版ではルールにハードコードすること。ただし将来 `Config` へ移せる構造とすること。
 - 各ルールは安定した識別子（`id`）、表示名（`label`）、説明文（`description`）を必ず持つこと。
@@ -246,7 +247,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | F-ELV-04 | UAC のキャンセルは通常の失敗と区別して扱い、専用の終了コード（CLI では `2`）で報告すること |
 | F-ELV-05 | 昇格の実行（`Platform::elevate`）は起動の成否のみを返し、`process::exit` の判断は CLI/GUI 側が行うこと（`core` はプロセスを終了させない） |
 
-- 本 PR（A2）の時点では、昇格しても走査・削除の対象は増えない。`needs_admin` なルールを実際に対象化するのは将来対応 A1（Issue #40）の責務である。
+- 昇格状態を走査・削除の対象化に接続する部分（`needs_admin` ルールを実際に対象化する）は A1（Issue #40）で対応済み。7.4 参照。
 
 ---
 
@@ -260,7 +261,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | NF-SAF-02 | 削除は既定でゴミ箱経由とし、復旧可能な状態を保つこと |
 | NF-SAF-03 | ドライランを既定とし、明示的な指示なく削除が発生しないこと |
 | NF-SAF-04 | 許可リスト方式を採り、未定義の領域を削除対象としないこと |
-| NF-SAF-05 | 管理者権限を要する領域は初版では候補から外し、一覧には「将来対応」と表示して事故を防ぐこと |
+| NF-SAF-05 | 管理者権限を要する領域は、昇格していない場合は候補から外し、一覧には「管理者権限が必要」と表示して事故を防ぐこと（A1 / Issue #40）。昇格していても、既定選択（`recommend()`）や `Safety` の格上げにより無確認で対象化してはならない |
 
 ### 6.2 拡張性
 
@@ -340,16 +341,16 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | 4a | 分岐：明示実行 | `pc-cleaner clean` によりゴミ箱削除を実行すること |
 | 4b | 分岐：完全削除 | `--permanent` が明示指定されたときのみ完全削除すること。復旧不可のため確認を要すること |
 
-### 7.4 フロー④：管理者権限領域（将来対応の分岐）
+### 7.4 フロー④：管理者権限領域（A1 / A2 対応済み）
 
-初版スコープ外。構造だけを用意し、有効化は後から行う。初版ではフィルタで安全に除外しておくこと。
+初版スコープ外だったが、A2（Issue #41）・A1（Issue #40）で対応済み。構造は変えていない（NF-EXT-01）。
 
 | # | ステップ | 要件 |
 |---|----------|------|
 | 1 | 走査時に権限判定 | `Platform::requires_admin()` により権限要否を判定すること。`C:\Windows\Temp` 等は `needs_admin = true` とすること |
 | 2 | 分岐条件 | 昇格権限を持っているかを判定すること（A2 / Issue #41：`Platform::is_elevated()` として実装済み） |
-| 2a | 初版：除外 | 候補から外し、一覧に「将来対応」と表示して事故を防ぐこと |
-| 2b | 将来：昇格して対象化 | `needs_admin` ルールを有効化すること。この対応で構造を変えないこと（将来対応 A1 / Issue #40 の責務。A2 の時点では未対応） |
+| 2a | 未昇格：除外 | 候補から外し、一覧に「管理者権限が必要」と表示して事故を防ぐこと |
+| 2b | 昇格済み：対象化 | `Rule::is_permitted` / `Rule::may_touch_admin_area` を経由して `needs_admin` ルールを対象化すること（A1 / Issue #40、対応済み）。この対応で `Platform` trait・`Config` の構造は変えていない |
 
 - 同じ仕組みで他 OS（macOS / Linux）の `platform` 実装も追加できること。
 
@@ -363,9 +364,9 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 | # | 項目 | 内容 | 依存 | 優先度 |
 |---|------|------|------|--------|
-| A1 | 管理者権限領域の対応 | `C:\Windows\Temp`、`SoftwareDistribution\Download` 等。`needs_admin=true` ルールを有効化 | 権限昇格フロー | 高 |
+| A1 | 管理者権限領域の対応 | `C:\Windows\Temp`、`SoftwareDistribution\Download` 等。`needs_admin=true` ルールを有効化 | 権限昇格フロー | 高（対応済み。`system_temp` を有効化。Issue #40。`SoftwareDistribution\Download` 等の個別ルール追加は A3/A4 で行う） |
 | A2 | 権限昇格フロー | UAC 昇格 or 昇格プロセスへの委譲。`Platform` trait に `elevate()` を追加 | — | 高（対応済み。5.8 / Issue #41） |
-| A3 | Windows Update キャッシュ | 更新済みパッケージの残骸。効果が大きいが要管理者 | A1 | 中 |
+| A3 | Windows Update キャッシュ | 更新済みパッケージの残骸。効果が大きいが要管理者 | A1 | 中（対応済み。`windows_update_cache` を追加。Issue #42） |
 | A4 | 配信最適化ファイル | Delivery Optimization のキャッシュ | A1 | 低 |
 
 初版依存：初版で `needs_admin` フラグとフィルタ除外、`requires_admin()` を実装しておくこと（フロー④ 2a）。
@@ -464,7 +465,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 - 同一環境・同一設定において、CLI と GUI の走査結果および推奨結果が一致すること。
 - 「走査 → プレビュー → 実行」を経由しない削除経路が存在しないこと。
-- `needs_admin = true` の領域に対する削除が発生しないこと。
+- `needs_admin = true` の領域に対する削除は、昇格していない状態では発生しないこと（A1 / Issue #40 以降は、昇格済みかつユーザーが明示的に選択した場合のみ発生しうる）。
 
 ---
 
@@ -472,7 +473,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 | # | 区分 | 内容 | 対応方針 |
 |---|------|------|----------|
-| R1 | 未決 | 管理者権限領域（`system_temp` 等）の有効化時期 | A2（権限昇格フロー、Issue #41）は対応済み。有効化自体は将来対応 A1（Issue #40）の着手時期に依存。A1 が入るまでは初版どおり除外し「将来対応」と表示すること |
+| R1 | 解決 | 管理者権限領域（`system_temp` 等）の有効化時期 | A2（権限昇格フロー、Issue #41）・A1（管理者権限領域の対応、Issue #40）とも対応済み。昇格済みかつユーザーが明示的に選択した場合のみ対象化される |
 | R2 | 未決 | macOS / Linux 対応の着手時期 | 将来対応 B1 / B2（優先度：中）。初版では `platform/unknown.rs` の最小スタブに留めること |
 | R3 | リスク | `Caution` / `Review` の候補をユーザーが十分な確認なく一括選択し、必要ファイルを削除する | 既定 OFF・注意色・`reason` 提示・ゴミ箱経由の 4 重防御で緩和すること |
 | R4 | リスク | 使用中ファイルの削除により、アプリケーションの動作に影響が出る | `recommend()` による使用中の可能性の検知（更新が数分前のものを非推奨とする）で緩和すること。検知精度の向上は将来対応 C2 とする |

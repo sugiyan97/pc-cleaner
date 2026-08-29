@@ -55,19 +55,25 @@ pub fn age_label(age_days: Option<u64>) -> String {
     }
 }
 
-/// `needs_admin` なルール（`system_temp`）のみを返す。走査対象には含まれない
-/// ため、一覧に「将来対応」として別枠表示するために使う（NF-SAF-05）。
-pub fn future_rules() -> Vec<Rule> {
+/// 現在の昇格状態では対象にできない（`needs_admin` かつ未昇格の）ルールを
+/// 返す。一覧に「管理者権限が必要」として別枠表示するために使う
+/// （NF-SAF-05 / A1 / Issue #40）。
+///
+/// [`pc_cleaner_core::rule::scannable_rules`] の厳密な補集合であること
+/// （`future_rules_and_scannable_rules_are_exact_complements` で検証）。
+pub fn future_rules(elevated: bool) -> Vec<Rule> {
     builtin_rules()
         .into_iter()
-        .filter(|r| r.needs_admin)
+        .filter(|r| !r.is_permitted(elevated))
         .collect()
 }
 
 /// `SkipReason` の表示ラベル。
 pub fn skip_reason_label(reason: &SkipReason) -> &'static str {
     match reason {
-        SkipReason::NeedsAdmin => "管理者権限が必要なため対象外（将来対応）",
+        SkipReason::NeedsAdmin => {
+            "管理者権限が必要なため対象外（管理者として実行し直すと対象になります）"
+        }
         SkipReason::UnknownBase => "この環境では場所を特定できませんでした",
         SkipReason::Unreadable => "読み取れませんでした",
         SkipReason::MissingThreshold => "しきい値が未設定のため対象外",
@@ -201,11 +207,39 @@ mod tests {
     }
 
     #[test]
-    fn future_rules_contains_only_needs_admin_rules() {
-        let rules = future_rules();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].id, "system_temp");
-        assert!(rules[0].needs_admin);
+    fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
+        let rules = future_rules(false);
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|r| r.needs_admin));
+        assert!(rules.iter().any(|r| r.id == "system_temp"));
+        assert!(rules.iter().any(|r| r.id == "windows_update_cache"));
+    }
+
+    #[test]
+    fn future_rules_is_empty_when_elevated() {
+        assert!(future_rules(true).is_empty());
+    }
+
+    #[test]
+    fn future_rules_and_scannable_rules_are_exact_complements() {
+        use pc_cleaner_core::rule::{builtin_rules, scannable_rules};
+
+        for elevated in [false, true] {
+            let future = future_rules(elevated);
+            let scannable = scannable_rules(elevated);
+            assert_eq!(
+                future.len() + scannable.len(),
+                builtin_rules().len(),
+                "elevated={elevated}: future_rules と scannable_rules の和が全ルール数と一致すること"
+            );
+            for rule in &future {
+                assert!(
+                    !scannable.iter().any(|r| r.id == rule.id),
+                    "elevated={elevated}: {} が両方に含まれている",
+                    rule.id
+                );
+            }
+        }
     }
 
     #[test]

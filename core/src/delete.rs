@@ -293,12 +293,16 @@ impl DeletePlan {
 /// 安全チェックは以下の順で評価し、最初に該当した理由で除外する：
 /// 1. `selected == false`（F-DEL-03）
 /// 2. `rules` に `rule_id` が無い（許可リスト方式、NF-SAF-04）
-/// 3. ルールが `needs_admin`（9.5 二次防御）
+/// 3. ルールが `needs_admin` かつ未昇格（9.5 二次防御。`Rule::is_permitted`
+///    を経由する。A1 / Issue #40）
 /// 4. `Platform::known_dir` が基点を解決できない
 /// 5. パスが基点配下でない・基点そのもの・`..` を含む（許可リスト方式の
 ///    再検証。`ScanEntry` は pub フィールドで呼び出し側が書き換えうるため、
 ///    scan 側の保証を信用せず delete 側でも検証する）
-/// 6. `Platform::requires_admin(path)` が `true`（9.5 二次防御）
+/// 6. `Platform::requires_admin(path)` が `true` で、かつルールが管理者領域
+///    に触れる資格を持たない（9.5 二次防御。`Rule::may_touch_admin_area` を
+///    経由する。昇格済みでも `needs_admin == false` のルールには適用され
+///    続ける。A1 / Issue #40）
 /// 7. ゴミ箱由来で、かつ完全削除でない（Issue #17）
 pub fn preview(
     platform: &dyn Platform,
@@ -343,7 +347,9 @@ fn plan_entry(
         .find(|r| r.id == entry.rule_id)
         .ok_or(ExclusionReason::UnknownRule)?;
 
-    if rule.needs_admin {
+    let elevated = platform.is_elevated();
+
+    if !rule.is_permitted(elevated) {
         return Err(ExclusionReason::NeedsAdmin);
     }
 
@@ -359,7 +365,12 @@ fn plan_entry(
         return Err(ExclusionReason::OutsideRuleBase);
     }
 
-    if platform.requires_admin(&entry.path) {
+    // 対象パスが管理者権限領域だった場合に通すのは、管理者権限を要すると
+    // 宣言したルールが実際に昇格済みのときだけ。昇格していても
+    // needs_admin == false のルールについては従来どおり拒否する（環境変数の
+    // 設定ミス等で一般ルールの基点が管理者領域へ解決された場合の安全網を、
+    // 昇格で無効化しないため。9.5 二次防御 / Issue #40）。
+    if platform.requires_admin(&entry.path) && !rule.may_touch_admin_area(elevated) {
         return Err(ExclusionReason::NeedsAdmin);
     }
 
@@ -659,6 +670,7 @@ mod tests {
         trashed: RefCell<Vec<PathBuf>>,
         fail_trash_for: HashSet<PathBuf>,
         admin_paths: HashSet<PathBuf>,
+        elevated: bool,
     }
 
     impl FakePlatform {
@@ -669,6 +681,7 @@ mod tests {
                 trashed: RefCell::new(Vec::new()),
                 fail_trash_for: HashSet::new(),
                 admin_paths: HashSet::new(),
+                elevated: false,
             }
         }
 
@@ -684,6 +697,13 @@ mod tests {
 
         fn admin_path(mut self, path: PathBuf) -> Self {
             self.admin_paths.insert(path);
+            self
+        }
+
+        /// `Platform::is_elevated()` が `true` を返すようにする
+        /// （A1 / Issue #40 のテスト用）。
+        fn elevated(mut self) -> Self {
+            self.elevated = true;
             self
         }
     }
@@ -713,7 +733,7 @@ mod tests {
         }
 
         fn is_elevated(&self) -> bool {
-            false
+            self.elevated
         }
 
         fn elevate(&self, _args: &[String]) -> crate::platform::ElevateResult {
@@ -930,6 +950,27 @@ mod tests {
     }
 
     #[test]
+    fn needs_admin_rule_is_planned_when_elevated() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let file = base.join("a.txt");
+        write_file(&file, b"x");
+        let platform = FakePlatform::new(dir.path().join("trash"))
+            .with_dir(KnownDir::SystemTemp, base)
+            .elevated();
+        let rules = vec![test_rule("system_temp", KnownDir::SystemTemp, true)];
+        let entries = vec![scan_entry("system_temp", file.clone(), 1, true)];
+
+        let mode = DeleteMode::resolve(&Config::default(), DeleteRequest::permanent_confirmed());
+        let plan = preview(&platform, &entries, &rules, mode);
+        assert_eq!(
+            plan.item_count(),
+            1,
+            "昇格していれば needs_admin ルールも計画に含まれる"
+        );
+    }
+
+    #[test]
     fn requires_admin_path_is_excluded() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base");
@@ -944,6 +985,34 @@ mod tests {
         let mode = DeleteMode::resolve(&Config::default(), DeleteRequest::permanent_confirmed());
         let plan = preview(&platform, &entries, &rules, mode);
         assert!(plan.is_empty());
+        assert_eq!(plan.excluded()[0].reason, ExclusionReason::NeedsAdmin);
+    }
+
+    /// A1（Issue #40）の核心の退行テスト。scan.rs の
+    /// `admin_base_is_still_excluded_for_non_admin_rule_when_elevated` の
+    /// delete.rs 版。`requires_admin` の二次防御は、昇格していても
+    /// `needs_admin == false` のルールには適用され続けること（素朴な
+    /// `!platform.is_elevated()` 緩和ではなく、`Rule::may_touch_admin_area`
+    /// を経由する「きつい側」のゲーティングであることの確認）。
+    #[test]
+    fn admin_path_is_still_excluded_for_non_admin_rule_when_elevated() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let file = base.join("a.txt");
+        write_file(&file, b"x");
+        let platform = FakePlatform::new(dir.path().join("trash"))
+            .with_dir(KnownDir::UserTemp, base)
+            .admin_path(file.clone())
+            .elevated();
+        let rules = vec![test_rule("user_temp", KnownDir::UserTemp, false)];
+        let entries = vec![scan_entry("user_temp", file.clone(), 1, true)];
+
+        let mode = DeleteMode::resolve(&Config::default(), DeleteRequest::permanent_confirmed());
+        let plan = preview(&platform, &entries, &rules, mode);
+        assert!(
+            plan.is_empty(),
+            "昇格していても needs_admin でないルールは管理者領域を対象にしない"
+        );
         assert_eq!(plan.excluded()[0].reason, ExclusionReason::NeedsAdmin);
     }
 

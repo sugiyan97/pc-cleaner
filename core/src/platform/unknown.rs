@@ -7,7 +7,7 @@
 //! `#[cfg(not(any(windows, target_os = "macos")))]` のように狭めること。
 
 #[cfg(not(windows))]
-use super::{KnownDir, Platform, PlatformError, Result};
+use super::{ElevateError, ElevateResult, KnownDir, Platform, PlatformError, Result};
 #[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 
@@ -39,6 +39,15 @@ impl Platform for UnknownPlatform {
     fn config_dir(&self) -> Option<PathBuf> {
         None
     }
+
+    fn is_elevated(&self) -> bool {
+        // 判定手段がないため、安全側（昇格していない）に倒す（NF-SAF-01）。
+        false
+    }
+
+    fn elevate(&self, _args: &[String]) -> ElevateResult {
+        Err(ElevateError::Unsupported)
+    }
 }
 
 #[cfg(not(windows))]
@@ -61,5 +70,10 @@ mod tests {
         ));
         assert!(platform.requires_admin(Path::new("/tmp/foo")));
         assert_eq!(platform.config_dir(), None);
+        assert!(!platform.is_elevated());
+        assert!(matches!(
+            platform.elevate(&[]),
+            Err(ElevateError::Unsupported)
+        ));
     }
 }

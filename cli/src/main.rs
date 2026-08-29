@@ -3,13 +3,24 @@
 //! 判定・削除ロジックは一切持たず、`pc-cleaner-core` の呼び出しと表示のみを
 //! 行う（F-CLI-01 / NF-MNT-01）。CLI で固めた挙動がそのまま GUI に乗る
 //! （設計目標 G4 / F-CLI-08）。
+//!
+//! ## 終了コード
+//!
+//! | コード | 意味 |
+//! |---|---|
+//! | `0` | 正常終了。`--admin` により昇格して再実行を開始した場合も含む
+//! |     | （元プロセスはその時点で正常に役目を終えたとみなす） |
+//! | `1` | 削除に失敗した項目がある（既存）、または昇格自体に失敗した |
+//! | `2` | `--admin` 指定時、UAC の確認画面でユーザーがキャンセルした |
+//! |     |（自動化から「同意が得られなかった」を検出できるようにするため） |
 
 #![deny(unsafe_code)]
 
 use clap::{Args, Parser, Subcommand};
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ItemOutcome, ScanEntry, config,
-    execute, human_size, platform, preview, rules_for_safeties, safety_scope, scan_pipeline,
+    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError, ItemOutcome,
+    ScanEntry, config, execute, human_size, platform, preview, rules_for_safeties, safety_scope,
+    scan_pipeline, should_relaunch,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -17,6 +28,11 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(name = "pc-cleaner", about = "手動選択型ディスク掃除ツール", version)]
 struct Cli {
+    /// 内部用。管理者権限で起動し直された後のプロセスであることを示す
+    /// マーカー。再昇格ループを防ぐためだけに使い、利用者が指定するもの
+    /// ではない（A2 / Issue #41）。
+    #[arg(long, hide = true, global = true)]
+    elevated: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -34,6 +50,10 @@ struct ScopeArgs {
     /// Caution / Review ルールも対象に含める（既定は Safe のみ）
     #[arg(long)]
     all: bool,
+    /// 管理者権限が必要な領域も対象にする。未昇格の場合は UAC の確認を経て
+    /// 管理者として起動し直し、現在のプロセスは終了する（A2 / Issue #41）。
+    #[arg(long)]
+    admin: bool,
 }
 
 #[derive(Args)]
@@ -50,16 +70,91 @@ struct CleanArgs {
     /// 完全削除の確認プロンプトを省略する（自動化用途。`--permanent` と併用時のみ意味を持つ）
     #[arg(long)]
     yes: bool,
+    /// 管理者権限が必要な領域も対象にする。未昇格の場合は UAC の確認を経て
+    /// 管理者として起動し直し、現在のプロセスは終了する（A2 / Issue #41）。
+    #[arg(long)]
+    admin: bool,
+}
+
+impl Command {
+    /// `--admin` が指定されたか（Scan/Clean 共通）。
+    fn admin_requested(&self) -> bool {
+        match self {
+            Command::Scan(args) => args.admin,
+            Command::Clean(args) => args.admin,
+        }
+    }
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let platform = platform::current();
+
+    if should_relaunch(
+        cli.command.admin_requested(),
+        platform.is_elevated(),
+        cli.elevated,
+    ) {
+        return run_elevate(platform.as_ref());
+    }
+    if cli.command.admin_requested() && cli.elevated && !platform.is_elevated() {
+        // 二重防御（should_relaunch のコメント参照）が効いた場合。通常は
+        // 起こらないが、起きた場合は管理者領域を対象外のまま静かに続行する
+        // のではなく、利用者に理由を伝える。
+        eprintln!(
+            "管理者権限で起動し直しましたが、昇格を確認できませんでした。\
+             管理者権限が必要な領域は対象外のまま続行します。"
+        );
+    }
+
     let config = load_config(platform.as_ref());
 
     match cli.command {
         Command::Scan(args) => run_scan(platform.as_ref(), &config, args.all),
         Command::Clean(args) => run_clean(platform.as_ref(), &config, args),
+    }
+}
+
+/// 昇格後プロセスへ渡す引数列を作る。元の引数（`argv[0]` を除く）をそのまま
+/// 引き継ぎ、末尾に内部用マーカー `--elevated` を足す。
+fn relaunch_args(argv_rest: &[String]) -> Vec<String> {
+    let mut args = argv_rest.to_vec();
+    args.push("--elevated".to_string());
+    args
+}
+
+/// `--admin` により管理者権限へ昇格して自プロセスを起動し直す
+/// （F-ELV-01 / A2 / Issue #41）。
+///
+/// **注意**：本 PR（A2）の時点では、昇格しても走査・削除の対象は増えない。
+/// `needs_admin` なルールを実際に対象化するのは A1（Issue #40、次段の PR）
+/// の責務であり、ここでは「昇格の仕組み」だけを提供する。
+fn run_elevate(platform: &dyn platform::Platform) -> ExitCode {
+    let argv_rest: Vec<String> = std::env::args().skip(1).collect();
+    let args = relaunch_args(&argv_rest);
+
+    println!("管理者権限が必要な領域を対象にするため、管理者として実行し直します。");
+    println!("UAC の確認画面で「はい」を選択してください。");
+
+    match platform.elevate(&args) {
+        Ok(()) => {
+            println!("管理者権限で開き直しました。このウィンドウは終了します。");
+            println!("結果は新しいウィンドウに表示されますが、完了と同時に閉じます。");
+            println!(
+                "出力を確認したい場合は、管理者としてターミナルを開いてから \
+                 pc-cleaner を実行してください（この場合 --admin は不要です）。"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(ElevateError::Cancelled) => {
+            eprintln!("管理者権限での実行はキャンセルされました。");
+            eprintln!("--admin を外せば、管理者権限が不要な領域だけを対象に実行できます。");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("管理者権限で実行し直せませんでした: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -260,8 +355,58 @@ mod tests {
                 assert!(args.permanent);
                 assert!(args.yes);
                 assert!(!args.all);
+                assert!(!args.admin);
             }
             _ => panic!("expected Clean"),
         }
+    }
+
+    #[test]
+    fn cli_parses_admin_flag_on_scan_and_clean() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "scan", "--admin"]).unwrap();
+        assert!(cli.command.admin_requested());
+
+        let cli = Cli::try_parse_from(["pc-cleaner", "clean", "--admin"]).unwrap();
+        assert!(cli.command.admin_requested());
+
+        let cli = Cli::try_parse_from(["pc-cleaner", "scan"]).unwrap();
+        assert!(!cli.command.admin_requested());
+    }
+
+    #[test]
+    fn elevated_marker_is_global_and_hidden_from_normal_use() {
+        // サブコマンドの前でも後でも指定できること（内部用マーカーのため、
+        // 利用者が意識する必要はないが、昇格後プロセスへの再付与が
+        // 引数の並びに依存しないことを保証する）。
+        let cli = Cli::try_parse_from(["pc-cleaner", "--elevated", "clean"]).unwrap();
+        assert!(cli.elevated);
+
+        let cli = Cli::try_parse_from(["pc-cleaner", "clean", "--elevated"]).unwrap();
+        assert!(cli.elevated);
+
+        let cli = Cli::try_parse_from(["pc-cleaner", "clean"]).unwrap();
+        assert!(!cli.elevated);
+    }
+
+    #[test]
+    fn relaunch_args_appends_elevated_marker() {
+        let original = vec!["clean".to_string(), "--admin".to_string()];
+        let relaunched = relaunch_args(&original);
+        assert_eq!(
+            relaunched,
+            vec![
+                "clean".to_string(),
+                "--admin".to_string(),
+                "--elevated".to_string()
+            ]
+        );
+
+        // 引き継いだ引数列が再度 Cli としてパースできること（実際に
+        // ShellExecuteExW へ渡す文字列を組み立てる前段の健全性チェック）。
+        let mut argv = vec!["pc-cleaner".to_string()];
+        argv.extend(relaunched);
+        let cli = Cli::try_parse_from(argv).unwrap();
+        assert!(cli.elevated);
+        assert!(cli.command.admin_requested());
     }
 }

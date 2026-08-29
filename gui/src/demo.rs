@@ -6,7 +6,9 @@
 //! 一時ディレクトリ配下だけで完結するサンプルデータを用意する。
 //! ユーザーの実ファイルには一切触れない。
 
-use pc_cleaner_core::platform::{KnownDir, Platform, PlatformError, Result};
+use pc_cleaner_core::platform::{
+    ElevateError, ElevateResult, KnownDir, Platform, PlatformError, Result,
+};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -99,5 +101,13 @@ impl Platform for DemoPlatform {
 
     fn config_dir(&self) -> Option<PathBuf> {
         Some(self.root.join("config"))
+    }
+
+    fn is_elevated(&self) -> bool {
+        false
+    }
+
+    fn elevate(&self, _args: &[String]) -> ElevateResult {
+        Err(ElevateError::Unsupported)
     }
 }

@@ -113,7 +113,7 @@ pc-cleaner/
 ### 4.2 Platform trait による OS 分離方針
 
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
-- `Platform` trait は次の 3 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）。
+- `Platform` trait は次の 5 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）。
 - `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、将来・要管理者）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）を持つこと。
 - ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
@@ -234,6 +234,22 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 ---
 
+### 5.8 権限昇格（elevate）
+
+将来対応 A2（Issue #41）で追加。管理者権限が必要な領域（8.1）を対象にするための昇格フローを定める。方式は「UAC 昇格 or 昇格プロセスへの委譲」のうち、**プロセス全体を `runas` で起動し直し、元の非昇格プロセスは終了する**方式を採用する（子プロセスへの処理委譲は採らない）。
+
+| ID | 要件 |
+|----|------|
+| F-ELV-01 | 管理者権限領域を対象にする要求があり、かつ未昇格の場合、UAC を経由して自プロセスを管理者権限で起動し直し、元のプロセスは終了すること |
+| F-ELV-02 | 昇格の有無はプロセストークンの `TokenElevation` により判定すること（`IsUserAnAdmin` 等のグループ所属判定は使わないこと。UAC で分割されたトークンを取り違えると再昇格ループに直結するため） |
+| F-ELV-03 | 昇格後プロセスには再昇格を抑止する内部マーカーを渡し、無限に再昇格し続けないこと |
+| F-ELV-04 | UAC のキャンセルは通常の失敗と区別して扱い、専用の終了コード（CLI では `2`）で報告すること |
+| F-ELV-05 | 昇格の実行（`Platform::elevate`）は起動の成否のみを返し、`process::exit` の判断は CLI/GUI 側が行うこと（`core` はプロセスを終了させない） |
+
+- 本 PR（A2）の時点では、昇格しても走査・削除の対象は増えない。`needs_admin` なルールを実際に対象化するのは将来対応 A1（Issue #40）の責務である。
+
+---
+
 ## 6. 非機能要件
 
 ### 6.1 安全性
@@ -331,9 +347,9 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | # | ステップ | 要件 |
 |---|----------|------|
 | 1 | 走査時に権限判定 | `Platform::requires_admin()` により権限要否を判定すること。`C:\Windows\Temp` 等は `needs_admin = true` とすること |
-| 2 | 分岐条件 | 昇格権限を持っているかを判定すること |
+| 2 | 分岐条件 | 昇格権限を持っているかを判定すること（A2 / Issue #41：`Platform::is_elevated()` として実装済み） |
 | 2a | 初版：除外 | 候補から外し、一覧に「将来対応」と表示して事故を防ぐこと |
-| 2b | 将来：昇格して対象化 | `needs_admin` ルールを有効化すること。この対応で構造を変えないこと |
+| 2b | 将来：昇格して対象化 | `needs_admin` ルールを有効化すること。この対応で構造を変えないこと（将来対応 A1 / Issue #40 の責務。A2 の時点では未対応） |
 
 - 同じ仕組みで他 OS（macOS / Linux）の `platform` 実装も追加できること。
 
@@ -348,7 +364,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | # | 項目 | 内容 | 依存 | 優先度 |
 |---|------|------|------|--------|
 | A1 | 管理者権限領域の対応 | `C:\Windows\Temp`、`SoftwareDistribution\Download` 等。`needs_admin=true` ルールを有効化 | 権限昇格フロー | 高 |
-| A2 | 権限昇格フロー | UAC 昇格 or 昇格プロセスへの委譲。`Platform` trait に `elevate()` を追加 | — | 高 |
+| A2 | 権限昇格フロー | UAC 昇格 or 昇格プロセスへの委譲。`Platform` trait に `elevate()` を追加 | — | 高（対応済み。5.8 / Issue #41） |
 | A3 | Windows Update キャッシュ | 更新済みパッケージの残骸。効果が大きいが要管理者 | A1 | 中 |
 | A4 | 配信最適化ファイル | Delivery Optimization のキャッシュ | A1 | 低 |
 
@@ -456,7 +472,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 
 | # | 区分 | 内容 | 対応方針 |
 |---|------|------|----------|
-| R1 | 未決 | 管理者権限領域（`system_temp` 等）の有効化時期 | 将来対応 A1 / A2 の着手時期に依存。初版では除外し「将来対応」と表示すること |
+| R1 | 未決 | 管理者権限領域（`system_temp` 等）の有効化時期 | A2（権限昇格フロー、Issue #41）は対応済み。有効化自体は将来対応 A1（Issue #40）の着手時期に依存。A1 が入るまでは初版どおり除外し「将来対応」と表示すること |
 | R2 | 未決 | macOS / Linux 対応の着手時期 | 将来対応 B1 / B2（優先度：中）。初版では `platform/unknown.rs` の最小スタブに留めること |
 | R3 | リスク | `Caution` / `Review` の候補をユーザーが十分な確認なく一括選択し、必要ファイルを削除する | 既定 OFF・注意色・`reason` 提示・ゴミ箱経由の 4 重防御で緩和すること |
 | R4 | リスク | 使用中ファイルの削除により、アプリケーションの動作に影響が出る | `recommend()` による使用中の可能性の検知（更新が数分前のものを非推奨とする）で緩和すること。検知精度の向上は将来対応 C2 とする |

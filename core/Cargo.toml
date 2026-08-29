@@ -16,6 +16,20 @@ serde_json = "1"
 # ゴミ箱送りの実装。default features には os_limited 用の chrono が含まれるが
 # 初版では trash::delete しか使わないため落とす（D3 で戻す想定）。
 trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
+# 権限昇格（A2 / Issue #41）。必要な feature だけを明示的に有効化する。
+# - Win32_UI_Shell        : ShellExecuteExW / SHELLEXECUTEINFOW / SEE_MASK_*
+# - Win32_System_Registry : SHELLEXECUTEINFOW が hkeyClass: HKEY を持つため必須
+#                           （単体では欠落エラーになる）。レジストリ操作自体は行わない。
+# - Win32_Security        : GetTokenInformation / TokenElevation / TOKEN_QUERY
+# - Win32_System_Threading: GetCurrentProcess / OpenProcessToken
+# - Win32_Foundation      : HANDLE / CloseHandle / ERROR_CANCELLED
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }
 
 [dev-dependencies]
 tempfile = "3"

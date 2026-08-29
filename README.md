@@ -51,7 +51,10 @@ pc-cleaner scan --all         # Caution / Review も含めて走査
 pc-cleaner clean --dry-run    # 削除予定のプレビューのみ表示
 pc-cleaner clean              # ゴミ箱経由で削除を実行
 pc-cleaner clean --permanent  # 確認の上、完全削除（復旧不可）
+pc-cleaner scan --admin       # 管理者権限が必要な領域も対象にする（UAC の確認を経て管理者として起動し直す）
 ```
+
+`--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。なお、管理者権限が必要な領域（`system_temp` 等）を実際に走査・削除の対象にする機能は将来対応です（[Issue #40](https://github.com/sugiyan97/pc-cleaner/issues/40)）。
 
 egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。
 

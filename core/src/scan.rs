@@ -566,6 +566,14 @@ mod tests {
         fn config_dir(&self) -> Option<PathBuf> {
             None
         }
+
+        fn is_elevated(&self) -> bool {
+            false
+        }
+
+        fn elevate(&self, _args: &[String]) -> crate::platform::ElevateResult {
+            Err(crate::platform::ElevateError::Unsupported)
+        }
     }
 
     fn test_rule(

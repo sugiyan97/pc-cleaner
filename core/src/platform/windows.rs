@@ -13,8 +13,27 @@
 
 use super::KnownDir;
 #[cfg(windows)]
-use super::{Platform, PlatformError, Result};
+use super::{ElevateError, ElevateResult, Platform, PlatformError, Result};
 use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+use std::ffi::c_void;
+#[cfg(windows)]
+use std::iter::once;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, HANDLE};
+#[cfg(windows)]
+use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+#[cfg(windows)]
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+#[cfg(windows)]
+use windows::Win32::UI::Shell::{
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
+};
+#[cfg(windows)]
+use windows::core::PCWSTR;
 
 /// Windows の既知フォルダ・管理者権限領域の基点。
 ///
@@ -91,8 +110,10 @@ impl WindowsPlatform {
     }
 
     /// `path` が管理者権限を要する領域の配下かどうかを、パスの文字列比較で
-    /// 判定する。ACL 確認や存在確認（I/O）は行わない初版のヒューリスティック
-    /// であり、真の権限判定は将来対応 A2 で行う。
+    /// 判定する。ACL 確認や存在確認（I/O）は行わない初版のヒューリスティックの
+    /// ままである。A2（Issue #41）で `is_elevated()` を追加し「今のプロセスが
+    /// 昇格しているか」を判定できるようにしたが、これはあくまで別の問い
+    /// （このパスは管理者領域か）であり、本メソッドの判定方式自体は変えない。
     fn is_admin_path(&self, path: &Path) -> bool {
         let target = normalize(path);
         self.admin_roots
@@ -125,6 +146,86 @@ fn normalize(path: &Path) -> String {
 /// 誤マッチするため、区切り文字での境界を明示的に見る。
 fn is_under(path: &str, base: &str) -> bool {
     path == base || path.starts_with(&format!("{base}\\"))
+}
+
+// ---- 権限昇格（A2 / Issue #41）の純粋層 ----
+//
+// `ShellExecuteExW` の `lpParameters` は「1 本の文字列」であり、受け取った
+// 側は `CommandLineToArgvW` 相当のルールで再分解する。空白や `"` を含む
+// パス・引数を素で連結すると引数境界が崩れるため、ここで明示的にクォート
+// する。`join_win` / `normalize` と同じく、ターゲット依存 API を使わない
+// 純粋関数として macOS 上でもテストできる形にする。
+
+/// `CommandLineToArgvW` の規則に従って引数 1 つをクォートする。
+///
+/// 規則：空文字列は `""`。空白・タブ・`"` を含まなければ素通しする。含む
+/// 場合は全体を `"` で囲み、内部の `"` は `\"` に、`"` の直前に来る連続
+/// バックスラッシュは 2 倍にする（`C:\foo\` のような末尾 `\` を含む引数を
+/// クォートしても、閉じ引用符と結合して壊れないようにするため）。
+// 非 Windows ビルドでは呼び出し元（shell_execute_runas 等）が #[cfg(windows)]
+// のため未使用扱いになる。from_dirs / is_admin_path と同じ理由で dead_code を
+// 許可する（テストからは常に呼ばれ、macOS 上でも検証される）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn quote_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_string();
+    }
+    if !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+        return arg.to_string();
+    }
+
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    let mut backslashes = 0usize;
+    for c in arg.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+                quoted.push('\\');
+            }
+            '"' => {
+                // 直前の連続バックスラッシュを2倍にしてから、クォート自身を
+                // エスケープする。
+                for _ in 0..backslashes {
+                    quoted.push('\\');
+                }
+                quoted.push('\\');
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                backslashes = 0;
+                quoted.push(c);
+            }
+        }
+    }
+    // 末尾が連続バックスラッシュのまま閉じクォートに続くと、閉じクォートを
+    // エスケープしたと解釈されてしまうため、ここでも2倍にする。
+    for _ in 0..backslashes {
+        quoted.push('\\');
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// 引数列を `lpParameters` 用の1本の文字列へ連結する。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `HRESULT` が Win32 エラーコード `code` 由来かを判定する
+/// （`HRESULT_FROM_WIN32` の逆算）。
+///
+/// UAC のキャンセル（`ERROR_CANCELLED` = 1223）を通常の失敗と区別するために
+/// 使う。`windows` crate の `WIN32_ERROR` には HRESULT への変換ヘルパーが
+/// 無いため、変換規則（`0x8007_0000 | (code & 0xFFFF)`）を自前で持つ。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_win32_error(hresult: i32, code: u32) -> bool {
+    (hresult as u32) == (0x8007_0000 | (code & 0xFFFF))
 }
 
 // ---- OS バインディング層（Windows のみ）----
@@ -160,6 +261,97 @@ fn trash_error_message(err: &trash::Error) -> String {
         // RestoreCollision / RestoreTwins は復元専用でゴミ箱送りでは発生しない。
         // 将来クレートが分岐を増やしても壊れないよう汎用文にフォールバックする。
         _ => "ゴミ箱への移動中に予期しないエラーが発生しました。".to_string(),
+    }
+}
+
+/// `windows::core::Error`（`ShellExecuteExW` 失敗時）を、ユーザーが読める
+/// 日本語の文へ翻訳する。`windows::core::Error` の中身を `core` の公開 API に
+/// 漏らさないため、この結果（`String`）だけを `ElevateError::Failed` に渡す
+/// （`trash_error_message` と同じ方針）。
+#[cfg(windows)]
+fn elevate_error_message(err: &windows::core::Error) -> String {
+    format!("{} (code {})", err.message(), err.code().0)
+}
+
+/// UTF-16 の NUL 終端バッファへ変換する。`PCWSTR` はこのバッファへの
+/// 借用ポインタであり、呼び出し元は `ShellExecuteExW` を呼び終えるまで
+/// バッファを生かしておく必要がある。
+#[cfg(windows)]
+fn to_wide(s: &std::ffi::OsStr) -> Vec<u16> {
+    s.encode_wide().chain(once(0)).collect()
+}
+
+/// プロセストークンの `TokenElevation` を読み、昇格済みかを返す。
+///
+/// `IsUserAnAdmin()` は Microsoft が非推奨としており、また「トークンが
+/// Administrators グループを含むか」しか見ないため、UAC で分割された
+/// 非昇格トークンと昇格トークンを取り違えうる（Built-in Administrator や
+/// UAC 無効環境等）。取り違えは「昇格したのに `is_elevated()` が `false` の
+/// まま無限に再昇格する」事故に直結するため、問いたい内容（トークンが
+/// 昇格しているか）をそのまま問う `TokenElevation` を使う。
+/// いずれかの手順が失敗した場合は安全側（`false`）に倒す（NF-SAF-01）。
+// WinAPI 呼び出しのため、crate 全体の #![deny(unsafe_code)] をこの関数
+// だけで局所的に解除する（crate 属性自体は絶対に外さないこと）。
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn query_is_elevated() -> bool {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let result = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut TOKEN_ELEVATION as *mut c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let _ = CloseHandle(token);
+
+        result.is_ok() && elevation.TokenIsElevated != 0
+    }
+}
+
+/// 自プロセスを `ShellExecuteExW`（`lpVerb = "runas"`）で管理者権限として
+/// 起動し直す。呼び出し元（CLI/GUI）はこの成功後に自プロセスを終了させる
+/// 責務を持つ（`elevate` の doc コメント参照）。
+// WinAPI 呼び出しのため、この関数だけ #![deny(unsafe_code)] を局所解除する。
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn shell_execute_runas(exe: &Path, args: &[String]) -> ElevateResult {
+    let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    let file = to_wide(exe.as_os_str());
+    let params = to_wide(std::ffi::OsStr::new(&join_args(args)));
+    let dir = to_wide(exe_dir.as_os_str());
+    let verb = to_wide(std::ffi::OsStr::new("runas"));
+
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        // SEE_MASK_NOASYNC: ShellExecuteEx が内部処理を完了してから戻る
+        //   ことを保証する。呼び出し直後に自プロセスを終了させるため必要。
+        // SEE_MASK_FLAG_NO_UI: OS 既定のエラーダイアログを抑止し、失敗は
+        //   自前の日本語メッセージで伝える（#35 と同じ方針）。UAC の同意
+        //   画面自体はこのフラグでは抑止されない。
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        lpDirectory: PCWSTR(dir.as_ptr()),
+        nShow: 1, // SW_SHOWNORMAL
+        ..Default::default()
+    };
+
+    match unsafe { ShellExecuteExW(&mut info) } {
+        Ok(()) => Ok(()),
+        // ユーザーが UAC で「いいえ」を選ぶと ERROR_CANCELLED(1223) が
+        // HRESULT として返る。通常の失敗と区別する（F-ELV-04）。
+        Err(e) if is_win32_error(e.code().0, ERROR_CANCELLED.0) => Err(ElevateError::Cancelled),
+        Err(e) => Err(ElevateError::Failed(elevate_error_message(&e))),
     }
 }
 
@@ -215,6 +407,23 @@ impl Platform for WindowsPlatform {
 
     fn config_dir(&self) -> Option<PathBuf> {
         Some(self.config_dir.clone())
+    }
+
+    fn is_elevated(&self) -> bool {
+        query_is_elevated()
+    }
+
+    fn elevate(&self, args: &[String]) -> ElevateResult {
+        // 二重防御の1つ目：既に昇格済みなら WinAPI を一切呼ばずに返す。これに
+        // より、管理者権限で動く CI ランナー（windows-latest）上で誤って
+        // 呼ばれても実際にプロセスが生えることはない。
+        if self.is_elevated() {
+            return Err(ElevateError::AlreadyElevated);
+        }
+
+        let exe = std::env::current_exe()
+            .map_err(|e| ElevateError::CurrentExeUnavailable(e.to_string()))?;
+        shell_execute_runas(&exe, args)
     }
 }
 
@@ -304,6 +513,81 @@ mod tests {
     fn requires_admin_matches_base_directory_itself() {
         let platform = fixture();
         assert!(platform.is_admin_path(Path::new(r"C:\Windows")));
+    }
+
+    // ---- 権限昇格（A2 / Issue #41）の純粋層 ----
+
+    #[test]
+    fn quote_arg_passes_through_simple_values() {
+        assert_eq!(quote_arg(""), "\"\"");
+        assert_eq!(quote_arg("scan"), "scan");
+        assert_eq!(quote_arg("--admin"), "--admin");
+        assert_eq!(quote_arg(r"C:\foo\bar.exe"), r"C:\foo\bar.exe");
+    }
+
+    #[test]
+    fn quote_arg_wraps_values_with_whitespace() {
+        assert_eq!(quote_arg("hello world"), "\"hello world\"");
+        assert_eq!(quote_arg("a\tb"), "\"a\tb\"");
+    }
+
+    #[test]
+    fn quote_arg_escapes_embedded_quotes() {
+        assert_eq!(quote_arg(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn quote_arg_doubles_backslashes_before_closing_quote() {
+        // 末尾が連続バックスラッシュのまま閉じクォートに続くと、閉じクォート
+        // をエスケープしたと誤読される（CommandLineToArgvW の規則）ため、
+        // 閉じクォート直前のバックスラッシュは2倍にする必要がある。
+        // 手動でのエスケープ記述ミスを避けるため、期待値は push で組み立てる。
+        let input = r"C:\Program Files\"; // 空白を含むため引用され、末尾が \ の実例。
+        let mut expected = String::new();
+        expected.push('"');
+        expected.push_str(r"C:\Program Files");
+        expected.push('\\');
+        expected.push('\\');
+        expected.push('"');
+        assert_eq!(quote_arg(input), expected);
+    }
+
+    #[test]
+    fn join_args_joins_with_single_space() {
+        assert_eq!(join_args(&[]), "");
+        assert_eq!(join_args(&["scan".to_string()]), "scan");
+        assert_eq!(
+            join_args(&["clean".to_string(), "--admin".to_string()]),
+            "clean --admin"
+        );
+        assert_eq!(
+            join_args(&["a b".to_string(), "c".to_string()]),
+            "\"a b\" c"
+        );
+    }
+
+    #[test]
+    fn is_win32_error_matches_hresult_from_win32() {
+        // ERROR_CANCELLED (1223 = 0x4C7) -> 0x800704C7。
+        assert!(is_win32_error(0x800704C7u32 as i32, 1223));
+        assert!(!is_win32_error(0x80070005u32 as i32, 1223));
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod elevate_tests {
+    use super::*;
+
+    // ⚠️ windows-latest の GitHub Actions ランナーは管理者権限で動作して
+    // いることが多く、`is_elevated()` の実際の値は実行環境に依存する
+    // （開発者のデスクトップでは false、CI では true になりうる）。
+    // 値そのものを assert すると必ずどちらかの環境で壊れるため、ここでは
+    // パニックしないことだけを確認する。`elevate()` 自体は実プロセスを
+    // 起動しうるため、実 OS バインディングを呼ぶテストはここでも書かない。
+    #[test]
+    fn is_elevated_does_not_panic() {
+        let _ = WindowsPlatform::new().is_elevated();
     }
 }
 

@@ -27,7 +27,7 @@ pub use delete::{
 };
 pub use entry::ScanEntry;
 pub use format::human_size;
-pub use platform::KnownDir;
+pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};
 pub use recommend::Recommendation;
 pub use rule::{MatchKind, Rule, Safety};
 pub use scan::{

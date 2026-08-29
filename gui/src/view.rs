@@ -126,6 +126,27 @@ pub fn exclusion_label(reason: pc_cleaner_core::ExclusionReason) -> Option<&'sta
     }
 }
 
+/// 昇格後プロセスへ渡す起動引数を作る（A2 / Issue #41）。
+///
+/// `current`（`std::env::args().skip(1)` 相当）をそのまま引き継ぎ、内部用
+/// マーカー `--elevated` を末尾に足す。既に付いている場合は重複させない
+/// （二重防御：万一 `elevate()` が誤って多重に呼ばれても引数が増え続けない）。
+pub fn relaunch_args(current: &[String]) -> Vec<String> {
+    let mut args = current.to_vec();
+    if !args.iter().any(|a| a == "--elevated") {
+        args.push("--elevated".to_string());
+    }
+    args
+}
+
+/// 昇格確認モーダルの案内文。
+pub fn elevate_confirm_text() -> &'static str {
+    "pc-cleaner を管理者権限で起動し直します。\n\
+     UAC の確認画面で「はい」を選択してください。\n\n\
+     現在のウィンドウは終了し、走査結果と未保存の選択は失われます\
+     （ルール別の既定は保存してから起動し直します）。"
+}
+
 /// 削除失敗を message ごとにグルーピングする。多くの場合、失敗は共通の
 /// 原因（同じメッセージ）に集約されるため、1 ファイル 1 行の羅列ではなく
 /// 「メッセージ（件数）」単位にまとめて表示する（#35）。
@@ -262,5 +283,30 @@ mod tests {
     #[test]
     fn group_failures_handles_empty_input() {
         assert!(group_failures(&[]).is_empty());
+    }
+
+    #[test]
+    fn relaunch_args_appends_elevated_marker() {
+        let current = vec!["--demo".to_string()];
+        assert_eq!(
+            relaunch_args(&current),
+            vec!["--demo".to_string(), "--elevated".to_string()]
+        );
+    }
+
+    #[test]
+    fn relaunch_args_does_not_duplicate_the_marker() {
+        let current = vec!["--elevated".to_string()];
+        assert_eq!(relaunch_args(&current), vec!["--elevated".to_string()]);
+    }
+
+    #[test]
+    fn relaunch_args_handles_empty_input() {
+        assert_eq!(relaunch_args(&[]), vec!["--elevated".to_string()]);
+    }
+
+    #[test]
+    fn elevate_confirm_text_is_non_empty() {
+        assert!(!elevate_confirm_text().is_empty());
     }
 }

@@ -8,8 +8,8 @@
 use eframe::egui;
 use pc_cleaner_core::platform::Platform;
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress, DeleteRequest, ItemOutcome,
-    Rule, ScanEntry, ScanProgress, SkipReason, config, rule,
+    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress, DeleteRequest, ElevateError,
+    ItemOutcome, Rule, ScanEntry, ScanProgress, SkipReason, config, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,6 +69,11 @@ pub struct App {
     config_path: Option<PathBuf>,
     config: Config,
     demo: bool,
+    /// 現在のプロセスが管理者権限で動作しているか（起動時に一度だけ判定し
+    /// 保持する。実行中に変化しないため毎フレーム問い合わせる必要はない）。
+    elevated: bool,
+    /// 「管理者として実行し直す」確認モーダルを表示中か。
+    confirming_elevation: bool,
 
     scope: Scope,
     rules: Vec<Rule>,
@@ -99,17 +104,32 @@ pub struct App {
 
 impl App {
     /// `demo` が `true` の場合、`demo` feature が有効ならサンドボックスの
-    /// `Platform` を使う（開発時の目視確認用）。
-    pub fn new(demo: bool) -> Self {
+    /// `Platform` を使う（開発時の目視確認用）。`relaunched` は `--elevated`
+    /// （内部用マーカー）付きで起動されたか（A2 / Issue #41）。
+    pub fn new(demo: bool, relaunched: bool) -> Self {
         let platform = task::make_platform(demo);
+        let elevated = platform.is_elevated();
         let config_path = config::config_file_path(platform.as_ref());
         let config = config_path.as_deref().map(config::load).unwrap_or_default();
+
+        let mut notices = Vec::new();
+        if relaunched && !elevated {
+            // should_relaunch の二重防御が効いた場合。通常は起こらないが、
+            // 起きた場合は静かに非昇格のまま続けるのではなく理由を伝える。
+            notices.push(
+                "管理者権限で起動し直しましたが、昇格を確認できませんでした。\
+                 管理者権限が必要な領域は対象外のままです。"
+                    .to_string(),
+            );
+        }
 
         App {
             platform,
             config_path,
             config,
             demo,
+            elevated,
+            confirming_elevation: false,
             scope: Scope::SafeOnly,
             rules: Vec::new(),
             entries: Vec::new(),
@@ -124,7 +144,7 @@ impl App {
             permanent_confirm_text: String::new(),
             confirming: false,
             last_outcome: None,
-            notices: Vec::new(),
+            notices,
             started: false,
         }
     }
@@ -250,6 +270,7 @@ impl eframe::App for App {
         self.ui_bottom(ctx);
         self.ui_central(ctx);
         self.ui_confirm_modal(ctx);
+        self.ui_elevate_modal(ctx);
     }
 }
 
@@ -283,6 +304,20 @@ impl App {
                             self.start_scan(ctx);
                         }
                     });
+                    ui.separator();
+                    if self.elevated {
+                        ui.label("🔓 管理者権限で実行中");
+                    } else {
+                        ui.add_enabled_ui(!self.is_busy(), |ui| {
+                            if ui
+                                .button("🔒 管理者として実行し直す")
+                                .on_hover_text(view::elevate_confirm_text())
+                                .clicked()
+                            {
+                                self.confirming_elevation = true;
+                            }
+                        });
+                    }
                     match &self.task {
                         Task::Scanning {
                             rule_id,
@@ -680,6 +715,61 @@ impl App {
         } else if cancel || !open {
             self.confirming = false;
             self.permanent_confirm_text.clear();
+        }
+    }
+
+    /// 「管理者として実行し直す」確認モーダル（A2 / Issue #41）。
+    ///
+    /// `ui_confirm_modal` と同じく、ボタン操作はローカル変数
+    /// （proceed / cancel）で受けてから `.show()` の後にまとめて反映する。
+    ///
+    /// 本 PR（A2）の時点では、昇格しても走査・削除の対象は増えない。
+    /// `needs_admin` なルールを実際に対象化するのは A1（Issue #40）の責務。
+    fn ui_elevate_modal(&mut self, ctx: &egui::Context) {
+        if !self.confirming_elevation {
+            return;
+        }
+
+        let mut open = true;
+        let mut proceed = false;
+        let mut cancel = false;
+
+        egui::Window::new("管理者として実行し直す")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(view::elevate_confirm_text());
+                ui.horizontal(|ui| {
+                    if ui.button("実行").clicked() {
+                        proceed = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if proceed {
+            self.confirming_elevation = false;
+            // 昇格後の新プロセスは設定ファイルを読み直すため、先に保存して
+            // おかないと直前の「ルール別の既定」の変更が引き継がれない。
+            self.save_config();
+            let argv_rest: Vec<String> = std::env::args().skip(1).collect();
+            let args = view::relaunch_args(&argv_rest);
+            match self.platform.elevate(&args) {
+                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Err(ElevateError::Cancelled) => {
+                    self.notices
+                        .push("管理者権限での実行はキャンセルされました。".to_string());
+                }
+                Err(e) => {
+                    self.notices
+                        .push(format!("管理者権限で実行し直せませんでした: {e}"));
+                }
+            }
+        } else if cancel || !open {
+            self.confirming_elevation = false;
         }
     }
 }

@@ -17,6 +17,9 @@ use app::App;
 
 fn main() -> eframe::Result<()> {
     let demo = std::env::args().any(|a| a == "--demo");
+    // A2 / Issue #41: 管理者権限で起動し直された後のプロセスであることを
+    // 示す内部用マーカー。利用者が指定するものではない。
+    let relaunched = std::env::args().any(|a| a == "--elevated");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -42,7 +45,7 @@ fn main() -> eframe::Result<()> {
             if !fonts::install_japanese_font(&cc.egui_ctx) {
                 eprintln!("日本語フォントが見つかりませんでした。表示が崩れる場合があります。");
             }
-            Ok(Box::new(App::new(demo)))
+            Ok(Box::new(App::new(demo, relaunched)))
         }),
     )
 }

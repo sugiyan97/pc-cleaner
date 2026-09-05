@@ -11,6 +11,7 @@
 
 use crate::config::{Config, RulePref};
 use crate::entry::ScanEntry;
+use crate::inspect;
 use crate::platform::Platform;
 use crate::recommend::recommend;
 use crate::rule::{MatchKind, Rule, Safety};
@@ -94,6 +95,17 @@ pub enum ScanProgress {
         /// 合計サイズ（バイト）。
         total_size: u64,
     },
+    /// 走査完了後の追加調査（重複ファイル検出）の途中経過（C2 / Issue #48）。
+    ///
+    /// `Config::detect_duplicates` が `true` のときのみ発生する。使用中判定
+    /// （`inspect::annotate_in_use`）は個々のファイル I/O が軽量なため、
+    /// 専用の進捗イベントは設けない。
+    Inspecting {
+        /// ここまでに調査したエントリ数。
+        done: usize,
+        /// 調査対象の総エントリ数。
+        total: usize,
+    },
 }
 
 /// 指定した安全度のルールだけを返す。`needs_admin` なルールは、`elevated`
@@ -107,7 +119,9 @@ pub enum ScanProgress {
 /// と呼ぶことで、F-SCAN-06 / F-SCAN-07 を CLI/GUI 共通の同一 API で表現する。
 /// `elevated` には呼び出し側が `Platform::is_elevated()` の結果をそのまま
 /// 渡すこと（中間変数でのフラグ捏造を避ける）。`config` はルール毎の経過日数
-/// しきい値の上書きに使う（NF-EXT-03 / C1 / Issue #47）。
+/// しきい値の上書き（NF-EXT-03 / C1 / Issue #47）に加え、大容量ファイル
+/// しきい値（`Config::large_file_threshold_bytes`、C2 / Issue #48）も
+/// ルールへ持ち込むために必要になった。
 pub fn rules_for_safeties(safeties: &[Safety], config: &Config, elevated: bool) -> Vec<Rule> {
     crate::rule::scannable_rules(config, elevated)
         .into_iter()
@@ -146,16 +160,26 @@ pub fn apply_rule_prefs(entries: &mut [ScanEntry], config: &Config) {
 
 /// `rules` を走査して `ScanEntry` を返す。進捗通知は行わない。
 pub fn scan(platform: &dyn Platform, rules: &[Rule]) -> Vec<ScanEntry> {
-    scan_with_progress(platform, rules, |_| {})
+    scan_with_progress(platform, rules, &mut |_| {})
 }
 
-/// [`scan`] してから [`apply_rule_prefs`] を適用するまでの一連の処理。
+/// [`scan`] してから、重複ファイル検出（`Config::detect_duplicates` が
+/// `true` の場合のみ）・[`apply_rule_prefs`] を適用するまでの一連の処理。
 ///
 /// CLI（`scan_and_apply_prefs`）・GUI（走査ワーカー）はいずれもこの2関数を
 /// 同じ順序で呼んでいた。CLI/GUI にロジックを持たせない（F-CLI-01 /
 /// F-GUI-07）という原則をこの1関数に体現し、両者から呼び出す。
+///
+/// 重複検出は `entry.duplicate` を埋めたあとに [`apply_recommendations`] を
+/// 再実行することで、`recommend()` が返す `reason` に重複の注意書き
+/// （C2 / Issue #48）を反映させる。`recommend` は純粋関数であり同じ入力から
+/// 同じ出力を返すため、2度目の呼び出しで以前の注意書きが重複することはない。
 pub fn scan_pipeline(platform: &dyn Platform, rules: &[Rule], config: &Config) -> Vec<ScanEntry> {
     let mut entries = scan(platform, rules);
+    if config.detect_duplicates {
+        inspect::annotate_duplicates(&mut entries);
+        apply_recommendations(&mut entries, rules);
+    }
     apply_rule_prefs(&mut entries, config);
     entries
 }
@@ -165,9 +189,16 @@ pub fn scan_pipeline_with_progress(
     platform: &dyn Platform,
     rules: &[Rule],
     config: &Config,
-    on_progress: impl FnMut(ScanProgress),
+    mut on_progress: impl FnMut(ScanProgress),
 ) -> Vec<ScanEntry> {
-    let mut entries = scan_with_progress(platform, rules, on_progress);
+    let mut entries = scan_with_progress(platform, rules, &mut on_progress);
+    if config.detect_duplicates {
+        let total = entries.len();
+        on_progress(ScanProgress::Inspecting { done: 0, total });
+        inspect::annotate_duplicates(&mut entries);
+        apply_recommendations(&mut entries, rules);
+        on_progress(ScanProgress::Inspecting { done: total, total });
+    }
     apply_rule_prefs(&mut entries, config);
     entries
 }
@@ -178,10 +209,15 @@ pub fn scan_pipeline_with_progress(
 /// メタデータは、該当するルール／ファイルを候補から落とすだけで走査全体を
 /// 失敗させない（NF-SAF-01 に寄せた安全側の挙動）。`on_progress` は常に
 /// 呼び出し元スレッドから呼ばれる（UI の非 `Send` な状態をそのまま掴める）。
+///
+/// `on_progress` を `&mut dyn FnMut` で受け取るのは、[`scan_pipeline_with_progress`]
+/// が本関数から戻ったあとも同じコールバックで
+/// [`ScanProgress::Inspecting`] を通知できるようにするため（値渡しだと
+/// 本関数の呼び出しでムーブされてしまい、以後使えなくなる）。
 pub fn scan_with_progress(
     platform: &dyn Platform,
     rules: &[Rule],
-    mut on_progress: impl FnMut(ScanProgress),
+    on_progress: &mut dyn FnMut(ScanProgress),
 ) -> Vec<ScanEntry> {
     let now = SystemTime::now();
 
@@ -224,7 +260,12 @@ pub fn scan_with_progress(
     });
 
     // ---- 集約フェーズ ----
-    let entries: Vec<ScanEntry> = results.into_iter().flatten().collect();
+    let mut entries: Vec<ScanEntry> = results.into_iter().flatten().collect();
+
+    // 使用中判定（C2 / Issue #48）は I/O を伴うため、`recommend()` を純粋関数
+    // のまま保つべく、ここ（recommend() 呼び出しの直前）で行う。
+    inspect::annotate_in_use(platform, &mut entries);
+    apply_recommendations(&mut entries, rules);
 
     on_progress(ScanProgress::Finished {
         entries: entries.len(),
@@ -232,6 +273,26 @@ pub fn scan_with_progress(
     });
 
     entries
+}
+
+/// 各エントリに [`recommend`] を適用し、`recommended` / `selected` / `reason`
+/// を埋める。`entry.rule_id` に対応する `Rule` が `rules` に無い場合は
+/// 何もしない（`build_entry` が設定した既定値のまま：非推奨・未選択・
+/// 理由なし。安全側 NF-SAF-01）。
+///
+/// [`inspect::annotate_in_use`] の後、[`apply_rule_prefs`] の前に呼ぶこと。
+/// `recommend` は純粋関数のため複数回呼んでも安全であり、
+/// [`scan_pipeline`] / [`scan_pipeline_with_progress`] は重複ファイル検出
+/// （C2 / Issue #48）の後にもう一度呼び出す。
+fn apply_recommendations(entries: &mut [ScanEntry], rules: &[Rule]) {
+    for entry in entries {
+        if let Some(rule) = rules.iter().find(|r| r.id == entry.rule_id) {
+            let recommendation = recommend(entry, rule);
+            entry.recommended = recommendation.recommended;
+            entry.selected = recommendation.recommended;
+            entry.reason = recommendation.reason;
+        }
+    }
 }
 
 /// 走査対象として解決されたルールと、その実パス。
@@ -275,8 +336,10 @@ fn resolve_target<'a>(
 
 /// 1つの走査対象を処理し、`ScanEntry` を生成する（並列実行されるワーカー）。
 ///
-/// `recommend()` を適用して `recommended` / `reason` / `selected` を埋める
-/// （`Config` による上書きは [`apply_rule_prefs`] が呼び出し側で行う）。
+/// `recommend()` はここでは適用しない：使用中判定（C2 / Issue #48、
+/// `inspect::annotate_in_use`）を経てから [`apply_recommendations`] が
+/// 集約フェーズ（呼び出し元スレッド・逐次）でまとめて適用する
+/// （`Config` による上書きは [`apply_rule_prefs`] がさらにその後で行う）。
 fn walk_target(
     target: &ScanTarget,
     now: SystemTime,
@@ -307,13 +370,6 @@ fn walk_target(
             })
         }
     };
-
-    for entry in &mut entries {
-        let recommendation = recommend(entry, rule);
-        entry.recommended = recommendation.recommended;
-        entry.selected = recommendation.recommended;
-        entry.reason = recommendation.reason;
-    }
 
     // read_dir の返す順序は OS 依存のため、再実行間・CLI/GUI 間で結果が
     // 一致するよう path でソートする（9.5）。
@@ -505,6 +561,10 @@ fn build_entry(
         file_count,
         modified,
         age_days,
+        // 使用中判定・重複検出（C2 / Issue #48）は走査後の集約フェーズで
+        // 行う（inspect::annotate_in_use / annotate_duplicates）。
+        in_use: None,
+        duplicate: None,
         recommended: false,
         reason: String::new(),
         selected: false,
@@ -625,6 +685,7 @@ mod tests {
             needs_admin,
             safety,
             age_threshold_days,
+            large_file_threshold_bytes: None,
         }
     }
 
@@ -1002,7 +1063,7 @@ mod tests {
         ];
 
         let mut events = Vec::new();
-        let entries = scan_with_progress(&platform, &rules, |event| events.push(event));
+        let entries = scan_with_progress(&platform, &rules, &mut |event| events.push(event));
 
         assert_eq!(entries.len(), 2);
         assert_eq!(
@@ -1054,7 +1115,7 @@ mod tests {
         ];
 
         let mut events = Vec::new();
-        scan_with_progress(&platform, &rules, |event| events.push(event));
+        scan_with_progress(&platform, &rules, &mut |event| events.push(event));
 
         assert!(events.iter().any(|e| matches!(
             e,
@@ -1082,6 +1143,8 @@ mod tests {
                 file_count: 1,
                 modified: None,
                 age_days: None,
+                in_use: None,
+                duplicate: None,
                 recommended: false,
                 reason: String::new(),
                 selected: false,
@@ -1093,6 +1156,8 @@ mod tests {
                 file_count: 1,
                 modified: None,
                 age_days: None,
+                in_use: None,
+                duplicate: None,
                 recommended: true,
                 reason: String::new(),
                 selected: true,
@@ -1104,6 +1169,8 @@ mod tests {
                 file_count: 1,
                 modified: None,
                 age_days: None,
+                in_use: None,
+                duplicate: None,
                 recommended: true,
                 reason: String::new(),
                 selected: true,
@@ -1122,5 +1189,76 @@ mod tests {
         assert!(entries[0].selected, "AlwaysSelect");
         assert!(!entries[1].selected, "Exclude");
         assert!(entries[2].selected, "未設定は recommended のまま");
+    }
+
+    // ---- C2 / Issue #48: 重複ファイル検出の scan_pipeline への配線 ----
+
+    #[test]
+    fn scan_pipeline_applies_recommend_after_duplicate_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file_with_age(&dir.path().join("a.tmp"), b"same content", 10);
+        write_file_with_age(&dir.path().join("b.tmp"), b"same content", 5);
+
+        let platform = FakePlatform::new().with(KnownDir::UserTemp, dir.path().to_path_buf());
+        let rule = test_rule(
+            "user_temp",
+            KnownDir::UserTemp,
+            MatchKind::All,
+            Safety::Safe,
+            false,
+            None,
+        );
+        let config = Config {
+            detect_duplicates: true,
+            ..Config::default()
+        };
+
+        let entries = scan_pipeline(&platform, std::slice::from_ref(&rule), &config);
+
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries.iter().any(|e| e.duplicate.is_some()),
+            "重複検出が実行され duplicate が設定されること"
+        );
+        let non_primary = entries
+            .iter()
+            .find(|e| matches!(e.duplicate, Some(info) if !info.is_primary))
+            .expect("non-primary エントリが1件あるはず");
+        assert!(
+            non_primary.reason.contains("同一内容のファイルが他に"),
+            "recommend() が重複検出の後に適用され、reason に注意書きが反映されること: {}",
+            non_primary.reason
+        );
+    }
+
+    #[test]
+    fn scan_pipeline_skips_duplicate_detection_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file_with_age(&dir.path().join("a.tmp"), b"same content", 10);
+        write_file_with_age(&dir.path().join("b.tmp"), b"same content", 5);
+
+        let platform = FakePlatform::new().with(KnownDir::UserTemp, dir.path().to_path_buf());
+        let rule = test_rule(
+            "user_temp",
+            KnownDir::UserTemp,
+            MatchKind::All,
+            Safety::Safe,
+            false,
+            None,
+        );
+        let config = Config::default(); // detect_duplicates: false（既定）
+
+        let entries = scan_pipeline(&platform, std::slice::from_ref(&rule), &config);
+
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries.iter().all(|e| e.duplicate.is_none()),
+            "detect_duplicates が false のときは重複検出をスキップすること"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|e| !e.reason.contains("同一内容のファイルが他に")),
+        );
     }
 }

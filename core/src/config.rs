@@ -41,7 +41,20 @@ pub struct Config {
     /// ルール `id` ごとの経過日数しきい値の上書き（日）。未設定のルールは
     /// `Rule` 定義側の既定値を使う（NF-EXT-03 / C1 / Issue #47）。
     pub age_thresholds: std::collections::HashMap<String, u64>,
+    /// 「サイズが大きい」と見なすしきい値（バイト単位）。C2 / Issue #48。
+    ///
+    /// `Rule::large_file_threshold_bytes` の元になる値。あくまで
+    /// `recommend()` が付け加える注意書き（`reason` への追記）のためのもので、
+    /// 推奨可否そのものには影響しない。
+    pub large_file_threshold_bytes: u64,
+    /// 走査時に重複ファイルを検出するか（C2 / Issue #48）。
+    ///
+    /// 内容ハッシュの計算を伴い走査コストが増えるため既定は `false`。
+    pub detect_duplicates: bool,
 }
+
+/// 既定の大容量ファイルしきい値（1 GiB）。
+const DEFAULT_LARGE_FILE_THRESHOLD_BYTES: u64 = 1_073_741_824;
 
 impl Default for Config {
     fn default() -> Self {
@@ -50,6 +63,8 @@ impl Default for Config {
             use_trash: true,
             dry_run_default: true,
             age_thresholds: std::collections::HashMap::new(),
+            large_file_threshold_bytes: DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
+            detect_duplicates: false,
         }
     }
 }
@@ -121,6 +136,11 @@ mod tests {
         );
         assert!(config.rule_prefs.is_empty());
         assert!(config.age_thresholds.is_empty());
+        assert_eq!(
+            config.large_file_threshold_bytes, 1_073_741_824,
+            "既定値は1 GiB"
+        );
+        assert!(!config.detect_duplicates, "走査コストのため既定は false");
     }
 
     #[test]

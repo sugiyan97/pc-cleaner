@@ -756,6 +756,8 @@ mod tests {
             file_count: 1,
             modified: None,
             age_days: None,
+            in_use: None,
+            duplicate: None,
             recommended: selected,
             reason: String::new(),
             selected,
@@ -772,6 +774,7 @@ mod tests {
             needs_admin,
             safety: Safety::Safe,
             age_threshold_days: None,
+            large_file_threshold_bytes: None,
         }
     }
 

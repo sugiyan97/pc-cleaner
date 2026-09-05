@@ -61,6 +61,13 @@ pub struct Rule {
     /// フィールドのままにしているのは、`match_kind` の種類によって用途が
     /// 異なるため（前述のとおり）。
     pub age_threshold_days: Option<u64>,
+    /// 「サイズが大きい」と見なすしきい値（バイト単位、C2 / Issue #48）。
+    ///
+    /// `Config::large_file_threshold_bytes` から `builtin_rules` が設定する。
+    /// `recommend()` はこの値以上のエントリに注意書きを付け加えるだけで、
+    /// 推奨可否そのものは変えない。大きな注意書きを出す意味が薄いルール
+    /// （既に個別ファイル単位で確認が前提のもの等）では `None` のままでよい。
+    pub large_file_threshold_bytes: Option<u64>,
 }
 
 impl Rule {
@@ -108,7 +115,9 @@ const DEFAULT_OLD_DOWNLOAD_THRESHOLD_DAYS: u64 = 90;
 /// `old_logs` / `old_downloads` の経過日数しきい値は `config` を通じて
 /// ユーザーが上書きできる（`Config::age_threshold_days`）。上書きは
 /// `age_threshold_days` フィールドだけでなく、`label` / `description` の
-/// 表示文にも反映する（NF-EXT-03 / C1 / Issue #47）。
+/// 表示文にも反映する（NF-EXT-03 / C1 / Issue #47）。`config` はまた、
+/// #48（C2）で追加された大容量ファイルしきい値
+/// （`Config::large_file_threshold_bytes`）をルールへ持ち込むためにも使う。
 pub fn builtin_rules(config: &Config) -> Vec<Rule> {
     let old_log_threshold_days =
         config.age_threshold_days("old_logs", DEFAULT_OLD_LOG_THRESHOLD_DAYS);
@@ -128,6 +137,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "browser_cache".to_string(),
@@ -142,6 +152,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "thumbnail_cache".to_string(),
@@ -158,6 +169,9 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            // サムネイルキャッシュの個々のファイルが大容量になることは
+            // ほぼ無く、大容量注意の告知に意味がないため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "recycle_bin".to_string(),
@@ -176,6 +190,9 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // （docs/requirements.md 5.7 も合わせて更新済み）。
             safety: Safety::Caution,
             age_threshold_days: None,
+            // 既にユーザーが「実行前に中身を確認」する前提のルールであり、
+            // 大容量注意の告知を重ねる意味が薄いため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "old_logs".to_string(),
@@ -191,6 +208,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Caution,
             age_threshold_days: Some(old_log_threshold_days),
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "old_downloads".to_string(),
@@ -205,6 +223,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Review,
             age_threshold_days: Some(old_download_threshold_days),
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "system_temp".to_string(),
@@ -225,6 +244,8 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // この Safety を Safe や Caution に上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // 管理者権限領域で、既に個別確認が前提のルールのため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "windows_update_cache".to_string(),
@@ -253,6 +274,8 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // 上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // system_temp と同じ理由で None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "delivery_optimization_cache".to_string(),
@@ -279,6 +302,8 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // Caution に上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // system_temp と同じ理由で None のまま。
+            large_file_threshold_bytes: None,
         },
     ]
 }
@@ -347,7 +372,8 @@ mod tests {
 
     #[test]
     fn needs_admin_rules_are_excluded_unless_elevated() {
-        let rules = builtin_rules(&Config::default());
+        let config = Config::default();
+        let rules = builtin_rules(&config);
         let mut admin_ids: Vec<&str> = rules
             .iter()
             .filter(|r| r.needs_admin)
@@ -363,7 +389,7 @@ mod tests {
             ]
         );
 
-        let not_elevated = scannable_rules(&Config::default(), false);
+        let not_elevated = scannable_rules(&config, false);
         assert_eq!(not_elevated.len(), rules.len() - admin_ids.len());
         assert!(
             not_elevated
@@ -371,7 +397,7 @@ mod tests {
                 .all(|r| !admin_ids.contains(&r.id.as_str()))
         );
 
-        let elevated = scannable_rules(&Config::default(), true);
+        let elevated = scannable_rules(&config, true);
         assert_eq!(elevated.len(), rules.len(), "昇格時は全ルールが対象になる");
         for id in &admin_ids {
             assert!(elevated.iter().any(|r| &r.id == id));
@@ -442,6 +468,7 @@ mod tests {
             needs_admin,
             safety,
             age_threshold_days: None,
+            large_file_threshold_bytes: None,
         }
     }
 
@@ -509,6 +536,24 @@ mod tests {
             assert!(!rule.label.contains('\\'), "id={}", rule.id);
             assert!(!rule.description.contains(':'), "id={}", rule.id);
             assert!(!rule.description.contains('\\'), "id={}", rule.id);
+        }
+    }
+
+    #[test]
+    fn large_file_threshold_bytes_is_populated_from_config() {
+        // C2 / Issue #48: Config::large_file_threshold_bytes をルールへ
+        // 持ち込むルール（user_temp / browser_cache / old_logs / old_downloads）
+        // では、設定値がそのまま反映されること。
+        let config = Config {
+            large_file_threshold_bytes: 12_345,
+            ..Config::default()
+        };
+        let rules = builtin_rules(&config);
+
+        let with_threshold = ["user_temp", "browser_cache", "old_logs", "old_downloads"];
+        for id in with_threshold {
+            let rule = rules.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(rule.large_file_threshold_bytes, Some(12_345), "id={id}");
         }
     }
 }

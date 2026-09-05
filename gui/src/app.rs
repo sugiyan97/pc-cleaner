@@ -420,6 +420,39 @@ impl App {
             {
                 self.plan_dirty = true;
             }
+
+            ui.separator();
+            // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
+            // 保持するが、入力は MB 単位のほうが扱いやすいためここで変換する。
+            // 変更は次回の走査から反映される（rule.large_file_threshold_bytes
+            // は走査時に builtin_rules() が Config から埋め込むため）。
+            let mut large_file_mb = (self.config.large_file_threshold_bytes / (1024 * 1024)).max(1);
+            let mut rescan_needed = false;
+            ui.horizontal(|ui| {
+                ui.label("大容量ファイルのしきい値（MB）:");
+                if ui
+                    .add(egui::DragValue::new(&mut large_file_mb).range(1..=1_048_576))
+                    .on_hover_text("この値以上のファイルには「サイズが大きい」注意書きが付きます。")
+                    .changed()
+                {
+                    self.config.large_file_threshold_bytes = large_file_mb * 1024 * 1024;
+                    rescan_needed = true;
+                }
+            });
+            if ui
+                .checkbox(
+                    &mut self.config.detect_duplicates,
+                    "重複ファイルを検出する（走査が遅くなります）",
+                )
+                .changed()
+            {
+                rescan_needed = true;
+            }
+            if rescan_needed {
+                self.save_config();
+                self.start_scan(ctx);
+            }
+
             if ui.button("設定を保存").clicked() {
                 self.save_config();
             }
@@ -490,6 +523,18 @@ impl App {
                         ui.label(rule.map(|r| r.label.as_str()).unwrap_or(&entry.rule_id));
                         ui.label(view::human_size(entry.size));
                         ui.label(view::age_label(entry.age_days));
+                        // 大容量ファイル・重複ファイルの注意書き（C2 / Issue #48）。
+                        // 判定ロジックは持たず view の純粋ヘルパーに委譲する
+                        // （F-GUI-07）。
+                        let large_file_threshold = rule.and_then(|r| r.large_file_threshold_bytes);
+                        if let Some(badge) =
+                            view::large_file_badge(entry.size, large_file_threshold)
+                        {
+                            ui.colored_label(ui.visuals().warn_fg_color, badge);
+                        }
+                        if let Some(badge) = view::duplicate_badge(entry.duplicate) {
+                            ui.colored_label(ui.visuals().warn_fg_color, badge);
+                        }
                         if let Some(hint) = exclusion_map.get(&entry.path) {
                             ui.colored_label(ui.visuals().warn_fg_color, *hint);
                         }

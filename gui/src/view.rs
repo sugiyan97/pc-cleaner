@@ -55,6 +55,26 @@ pub fn age_label(age_days: Option<u64>) -> String {
     }
 }
 
+/// エントリのサイズが `threshold` 以上のとき、表示用のバッジ文言を返す
+/// （C2 / Issue #48）。`threshold` が `None`（そのルールでは大容量注意を
+/// 出さない）のときは常に `None`。
+pub fn large_file_badge(size: u64, threshold: Option<u64>) -> Option<String> {
+    let threshold = threshold?;
+    (size >= threshold).then(|| format!("⚠ 大容量（{}）", human_size(size)))
+}
+
+/// エントリが重複ファイルグループに属するとき、表示用のバッジ文言を返す
+/// （C2 / Issue #48）。グループの代表（`is_primary`）には出さない：削除して
+/// よいのは「他に残っている」側であることを示すのが目的で、代表自身に注意書き
+/// を出すと紛らわしいため。
+pub fn duplicate_badge(duplicate: Option<pc_cleaner_core::DuplicateInfo>) -> Option<String> {
+    let info = duplicate?;
+    if info.is_primary {
+        return None;
+    }
+    Some(format!("⧉ 重複（他に{}件）", info.group_size - 1))
+}
+
 /// 現在の昇格状態では対象にできない（`needs_admin` かつ未昇格の）ルールを
 /// 返す。一覧に「管理者権限が必要」として別枠表示するために使う
 /// （NF-SAF-05 / A1 / Issue #40）。
@@ -207,6 +227,44 @@ mod tests {
     }
 
     #[test]
+    fn large_file_badge_is_none_without_a_threshold() {
+        assert_eq!(large_file_badge(1_000_000_000, None), None);
+    }
+
+    #[test]
+    fn large_file_badge_appears_at_or_above_threshold() {
+        assert_eq!(large_file_badge(999, Some(1_000)), None);
+        assert!(large_file_badge(1_000, Some(1_000)).is_some());
+        assert!(large_file_badge(2_000, Some(1_000)).is_some());
+    }
+
+    #[test]
+    fn duplicate_badge_is_none_for_primary_or_missing() {
+        use pc_cleaner_core::DuplicateInfo;
+        assert_eq!(duplicate_badge(None), None);
+        assert_eq!(
+            duplicate_badge(Some(DuplicateInfo {
+                group_id: 0,
+                group_size: 3,
+                is_primary: true,
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn duplicate_badge_shows_remaining_count_for_non_primary() {
+        use pc_cleaner_core::DuplicateInfo;
+        let badge = duplicate_badge(Some(DuplicateInfo {
+            group_id: 0,
+            group_size: 3,
+            is_primary: false,
+        }))
+        .unwrap();
+        assert!(badge.contains('2'));
+    }
+
+    #[test]
     fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
         let rules = future_rules(&Config::default(), false);
         assert!(!rules.is_empty());
@@ -279,6 +337,8 @@ mod tests {
             file_count: 1,
             modified: None,
             age_days: None,
+            in_use: None,
+            duplicate: None,
             recommended,
             reason: String::new(),
             selected,

@@ -15,6 +15,7 @@ pub mod config;
 pub mod delete;
 pub mod entry;
 pub mod format;
+pub mod history;
 pub mod inspect;
 pub mod platform;
 pub mod recommend;
@@ -30,6 +31,7 @@ pub use delete::{
 };
 pub use entry::{DuplicateInfo, ScanEntry};
 pub use format::human_size;
+pub use history::{History, HistoryEntry};
 pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};
 pub use recommend::Recommendation;
 pub use rule::{MatchKind, Rule, Safety};

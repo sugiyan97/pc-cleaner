@@ -508,6 +508,12 @@ impl DeleteOutcome {
     pub fn is_dry_run(&self) -> bool {
         self.mode.is_dry_run()
     }
+
+    /// 実行（またはドライランでなければ実行されたはずの）方法。ゴミ箱経由か
+    /// 完全削除かを、履歴記録（`history.rs`）が判別するために使う。
+    pub fn method(&self) -> DeleteMethod {
+        self.mode.method()
+    }
 }
 
 /// `plan` を実行する。進捗通知は行わない。

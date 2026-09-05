@@ -19,8 +19,8 @@
 use clap::{Args, Parser, Subcommand};
 use pc_cleaner_core::{
     Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError, ItemOutcome,
-    ScanEntry, config, execute, human_size, platform, preview, rules_for_safeties, safety_scope,
-    scan_pipeline, should_relaunch,
+    ScanEntry, config, execute, history, human_size, platform, preview, rules_for_safeties,
+    safety_scope, scan_pipeline, should_relaunch,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -211,6 +211,9 @@ fn run_clean(platform: &dyn platform::Platform, config: &Config, args: CleanArgs
 
     let outcome = execute(platform, final_plan);
     print_outcome(&outcome);
+    if !outcome.is_dry_run() {
+        record_history(platform, &outcome);
+    }
 
     if outcome.failed_count() > 0 {
         ExitCode::FAILURE
@@ -317,6 +320,27 @@ fn print_outcome(outcome: &DeleteOutcome) {
     for result in &outcome.results {
         if let ItemOutcome::Failed { message } = &result.outcome {
             eprintln!("  失敗: {} — {message}", result.path.display());
+        }
+    }
+}
+
+/// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
+///
+/// 履歴の記録は削除の成否そのものには影響させない。書き込みに失敗しても
+/// 警告を出すだけで、`run_clean` 全体の終了コードは変えない（F-CLI-01：
+/// CLI は薄く保ち、実行そのものを妨げない）。
+fn record_history(platform: &dyn platform::Platform, outcome: &DeleteOutcome) {
+    match history::record_outcome(platform, outcome) {
+        None => {}
+        Some(Err(e)) => {
+            eprintln!("警告: 履歴の記録に失敗しました: {e}");
+        }
+        Some(Ok(history)) => {
+            println!(
+                "累計解放: {}（{}回）",
+                human_size(history.total_freed_bytes()),
+                history.run_count()
+            );
         }
     }
 }

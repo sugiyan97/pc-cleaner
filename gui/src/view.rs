@@ -4,8 +4,9 @@
 //! （`platform/windows.rs` が純粋層とバインディング層に分かれているのと
 //! 同じ考え方）。
 
+use pc_cleaner_core::format::relative_days;
 use pc_cleaner_core::rule::builtin_rules;
-use pc_cleaner_core::{Config, Rule, Safety, ScanEntry, SkipReason, apply_rule_prefs};
+use pc_cleaner_core::{Config, History, Rule, Safety, ScanEntry, SkipReason, apply_rule_prefs};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -178,6 +179,42 @@ pub fn group_failures(failures: &[(PathBuf, String)]) -> Vec<(String, Vec<PathBu
     result
 }
 
+/// 履歴一覧の1行分の表示用データ（C4 / Issue #50）。
+pub struct HistoryRow {
+    /// 実行時刻の相対表現（例: "3日前"）。
+    pub when: String,
+    /// 解放容量・件数のまとめ。
+    pub summary: String,
+}
+
+/// `history` から、新しい順に最大 `limit` 件の表示行を作る。
+///
+/// `now_secs`（UNIX epoch 秒）は呼び出し側（GUI）が渡す：本モジュールは
+/// `egui` 非依存の純粋ロジックに保つため、現在時刻を自ら参照しない
+/// （`recommend.rs` が現在時刻を参照しないのと同じ方針）。
+pub fn history_rows(history: &History, now_secs: u64, limit: usize) -> Vec<HistoryRow> {
+    history
+        .recent(limit)
+        .into_iter()
+        .map(|entry| {
+            let seconds_ago = now_secs.saturating_sub(entry.timestamp_secs);
+            HistoryRow {
+                when: relative_days(seconds_ago),
+                summary: format!(
+                    "{} 解放 / {} 件{}",
+                    human_size(entry.freed_bytes),
+                    entry.deleted_count,
+                    if entry.permanent {
+                        "（完全削除）"
+                    } else {
+                        ""
+                    }
+                ),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +380,43 @@ mod tests {
     #[test]
     fn elevate_confirm_text_is_non_empty() {
         assert!(!elevate_confirm_text().is_empty());
+    }
+
+    fn history_entry(
+        timestamp_secs: u64,
+        freed_bytes: u64,
+        deleted_count: usize,
+    ) -> pc_cleaner_core::HistoryEntry {
+        pc_cleaner_core::HistoryEntry {
+            timestamp_secs,
+            freed_bytes,
+            deleted_count,
+            failed_count: 0,
+            permanent: false,
+        }
+    }
+
+    #[test]
+    fn history_rows_are_newest_first_and_respect_the_limit() {
+        let mut history = History::default();
+        for i in 0..5u64 {
+            history
+                .entries
+                .push(history_entry(i * 1000, 1024 * (i + 1), i as usize + 1));
+        }
+        let now_secs = 5000;
+        let rows = history_rows(&history, now_secs, 2);
+        assert_eq!(rows.len(), 2);
+        // 最新（i=4, timestamp=4000）が先頭に来ること。
+        assert!(rows[0].summary.contains("5.0 KB"));
+        assert!(rows[0].summary.contains("5 件"));
+        // 次点（i=3, timestamp=3000）。
+        assert!(rows[1].summary.contains("4.0 KB"));
+    }
+
+    #[test]
+    fn history_rows_handles_empty_history() {
+        let history = History::default();
+        assert!(history_rows(&history, 1000, 5).is_empty());
     }
 }

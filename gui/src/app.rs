@@ -9,7 +9,7 @@ use eframe::egui;
 use pc_cleaner_core::platform::Platform;
 use pc_cleaner_core::{
     Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress, DeleteRequest, ElevateError,
-    ItemOutcome, Rule, ScanEntry, ScanProgress, SkipReason, config, rule,
+    History, ItemOutcome, Rule, ScanEntry, ScanProgress, SkipReason, config, history, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,6 +68,8 @@ pub struct App {
     platform: Box<dyn Platform>,
     config_path: Option<PathBuf>,
     config: Config,
+    history_path: Option<PathBuf>,
+    history: History,
     demo: bool,
     /// 現在のプロセスが管理者権限で動作しているか（起動時に一度だけ判定し
     /// 保持する。実行中に変化しないため毎フレーム問い合わせる必要はない）。
@@ -112,7 +114,23 @@ impl App {
         let config_path = config::config_file_path(platform.as_ref());
         let config = config_path.as_deref().map(config::load).unwrap_or_default();
 
+        let history_path = history::history_file_path(platform.as_ref());
         let mut notices = Vec::new();
+        // `history::load` は config::load と異なり壊れたファイルを黙って
+        // 既定値へ差し替えない（実績は再現できないため）。ここで拾って
+        // 通知するが、破損したファイルを空の履歴で上書き保存はしない
+        // （`save()` を呼ばない）ので、ディスク上のファイルは調査用に残る。
+        let history = match history_path.as_deref().map(history::load) {
+            Some(Ok(history)) => history,
+            Some(Err(e)) => {
+                notices.push(format!(
+                    "履歴の読み込みに失敗しました（{e}）。過去の実績が正しく表示されない場合があります。"
+                ));
+                History::default()
+            }
+            None => History::default(),
+        };
+
         if relaunched && !elevated {
             // should_relaunch の二重防御が効いた場合。通常は起こらないが、
             // 起きた場合は静かに非昇格のまま続けるのではなく理由を伝える。
@@ -127,6 +145,8 @@ impl App {
             platform,
             config_path,
             config,
+            history_path,
+            history,
             demo,
             elevated,
             confirming_elevation: false,
@@ -199,6 +219,9 @@ impl App {
                 }
                 WorkerMsg::Delete(_) => {}
                 WorkerMsg::DeleteDone(outcome) => {
+                    if !outcome.is_dry_run() {
+                        self.record_history(&outcome);
+                    }
                     self.last_outcome = Some(outcome.into());
                     self.task = Task::Idle;
                     // 削除済みエントリが一覧に残らないよう自動で再走査する。
@@ -249,6 +272,24 @@ impl App {
         } else {
             self.notices
                 .push("この環境では設定の保存先を特定できません。".to_string());
+        }
+    }
+
+    /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
+    /// 記録に失敗しても `notices` へ警告を積むだけで、アプリの他の動作は
+    /// 妨げない（`save_config` と同じ方針）。
+    fn record_history(&mut self, outcome: &DeleteOutcome) {
+        match history::record_outcome(self.platform.as_ref(), outcome) {
+            None => {
+                self.notices
+                    .push("この環境では履歴の保存先を特定できません。".to_string());
+            }
+            Some(Err(e)) => {
+                self.notices.push(format!("履歴の記録に失敗しました: {e}"));
+            }
+            Some(Ok(history)) => {
+                self.history = history;
+            }
         }
     }
 }
@@ -398,6 +439,27 @@ impl App {
             if let Some(path) = &self.config_path {
                 ui.small(format!("保存先: {}", path.display()));
             }
+
+            ui.separator();
+            egui::CollapsingHeader::new("これまでの実績")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(format!(
+                        "累計 {} を解放（{} 回）",
+                        view::human_size(self.history.total_freed_bytes()),
+                        self.history.run_count()
+                    ));
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    for row in view::history_rows(&self.history, now_secs, 5) {
+                        ui.label(format!("{}: {}", row.when, row.summary));
+                    }
+                    if let Some(path) = &self.history_path {
+                        ui.small(format!("保存先: {}", path.display()));
+                    }
+                });
 
             let future_rules = view::future_rules(self.elevated);
             if !future_rules.is_empty() {

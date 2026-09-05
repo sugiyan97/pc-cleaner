@@ -1,5 +1,6 @@
 //! 掃除ルール（許可リストの1項目）。判定支援の一次情報。
 
+use crate::config::Config;
 use crate::platform::KnownDir;
 
 /// ルールの安全度区分。既定の選択状態と表示方法を決定する（5.2.1）。
@@ -54,8 +55,11 @@ pub struct Rule {
     /// 使われる。それ以外の `match_kind` では [`crate::recommend::recommend`]
     /// 専用のしきい値であり、走査時の絞り込みには使わない。
     ///
-    /// 初版ではルールにハードコードするが、将来 `Config` へ移設できるよう
-    /// `Rule` 本体とは独立したフィールドとして分離しておく（NF-EXT-03 / 将来対応 C1）。
+    /// `builtin_rules` が `Config::age_threshold_days` を通じてルール毎の
+    /// 既定値をユーザー設定で上書きした結果をここに解決済みの値として
+    /// 埋め込む（NF-EXT-03 / C1 / Issue #47）。`Rule` 本体とは独立した
+    /// フィールドのままにしているのは、`match_kind` の種類によって用途が
+    /// 異なるため（前述のとおり）。
     pub age_threshold_days: Option<u64>,
 }
 
@@ -85,11 +89,14 @@ impl Rule {
     }
 }
 
-/// `old_logs` ルールの推奨判定に用いる経過日数のしきい値（日）。
-const OLD_LOG_THRESHOLD_DAYS: u64 = 180;
+/// `old_logs` ルールの推奨判定に用いる経過日数のしきい値の既定値（日）。
+/// `Config::age_thresholds` に上書きが無い場合に使われる（NF-EXT-03 / C1）。
+const DEFAULT_OLD_LOG_THRESHOLD_DAYS: u64 = 180;
 
-/// `old_downloads` ルールの走査時の絞り込みに用いる経過日数のしきい値（日）。
-const OLD_DOWNLOAD_THRESHOLD_DAYS: u64 = 90;
+/// `old_downloads` ルールの走査時の絞り込みに用いる経過日数のしきい値の
+/// 既定値（日）。`Config::age_thresholds` に上書きが無い場合に使われる
+/// （NF-EXT-03 / C1）。
+const DEFAULT_OLD_DOWNLOAD_THRESHOLD_DAYS: u64 = 90;
 
 /// 初版の組み込みルールセット（許可リスト全体、5.7）。
 ///
@@ -97,7 +104,17 @@ const OLD_DOWNLOAD_THRESHOLD_DAYS: u64 = 90;
 /// 一覧に「管理者権限が必要」として別枠表示するため（NF-SAF-05）、昇格状態を
 /// 踏まえて走査・削除の対象だけに絞り込みたい場合は [`scannable_rules`] を
 /// 使う。
-pub fn builtin_rules() -> Vec<Rule> {
+///
+/// `old_logs` / `old_downloads` の経過日数しきい値は `config` を通じて
+/// ユーザーが上書きできる（`Config::age_threshold_days`）。上書きは
+/// `age_threshold_days` フィールドだけでなく、`label` / `description` の
+/// 表示文にも反映する（NF-EXT-03 / C1 / Issue #47）。
+pub fn builtin_rules(config: &Config) -> Vec<Rule> {
+    let old_log_threshold_days =
+        config.age_threshold_days("old_logs", DEFAULT_OLD_LOG_THRESHOLD_DAYS);
+    let old_download_threshold_days =
+        config.age_threshold_days("old_downloads", DEFAULT_OLD_DOWNLOAD_THRESHOLD_DAYS);
+
     vec![
         Rule {
             id: "user_temp".to_string(),
@@ -162,10 +179,10 @@ pub fn builtin_rules() -> Vec<Rule> {
         },
         Rule {
             id: "old_logs".to_string(),
-            label: format!("古いログ（{OLD_LOG_THRESHOLD_DAYS}日超）"),
+            label: format!("古いログ（{old_log_threshold_days}日超）"),
             description: format!(
                 "アプリが動作記録として書き出したログファイルです。最終更新から\
-                {OLD_LOG_THRESHOLD_DAYS}日以上経過したものを推奨対象としています。\
+                {old_log_threshold_days}日以上経過したものを推奨対象としています。\
                 過去の不具合を調査する予定がなければ削除して問題ありません。\
                 現在調査中の不具合がある場合は残してください。"
             ),
@@ -173,13 +190,13 @@ pub fn builtin_rules() -> Vec<Rule> {
             match_kind: MatchKind::Extension(vec!["log".to_string()]),
             needs_admin: false,
             safety: Safety::Caution,
-            age_threshold_days: Some(OLD_LOG_THRESHOLD_DAYS),
+            age_threshold_days: Some(old_log_threshold_days),
         },
         Rule {
             id: "old_downloads".to_string(),
-            label: format!("古いダウンロード（{OLD_DOWNLOAD_THRESHOLD_DAYS}日超）"),
+            label: format!("古いダウンロード（{old_download_threshold_days}日超）"),
             description: format!(
-                "ダウンロードフォルダにあり、最終更新から{OLD_DOWNLOAD_THRESHOLD_DAYS}日以上\
+                "ダウンロードフォルダにあり、最終更新から{old_download_threshold_days}日以上\
                 経過したファイルです。インストーラや資料など、本人にしか要否を判断できない\
                 ものが含まれます。既定では選択しません。削除する前に必ず中身を確認してください。"
             ),
@@ -187,7 +204,7 @@ pub fn builtin_rules() -> Vec<Rule> {
             match_kind: MatchKind::OlderThan,
             needs_admin: false,
             safety: Safety::Review,
-            age_threshold_days: Some(OLD_DOWNLOAD_THRESHOLD_DAYS),
+            age_threshold_days: Some(old_download_threshold_days),
         },
         Rule {
             id: "system_temp".to_string(),
@@ -272,8 +289,8 @@ pub fn builtin_rules() -> Vec<Rule> {
 /// （＝A2 の昇格を経てユーザーが明示的に管理者権限を与えた）ときは含める。
 /// 判定は [`Rule::is_permitted`] に一本化し、GUI 側の「管理者権限が必要」
 /// 表示（`gui/src/view.rs` の `future_rules`）とは厳密な補集合の関係を保つ。
-pub fn scannable_rules(elevated: bool) -> Vec<Rule> {
-    builtin_rules()
+pub fn scannable_rules(config: &Config, elevated: bool) -> Vec<Rule> {
+    builtin_rules(config)
         .into_iter()
         .filter(|r| r.is_permitted(elevated))
         .collect()
@@ -292,7 +309,7 @@ mod tests {
 
     #[test]
     fn builtin_rules_have_stable_unique_ids() {
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         let ids: HashSet<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         let expected: HashSet<&str> = [
             "user_temp",
@@ -313,7 +330,7 @@ mod tests {
 
     #[test]
     fn every_rule_has_non_empty_id_label_description() {
-        for rule in builtin_rules() {
+        for rule in builtin_rules(&Config::default()) {
             assert!(!rule.id.is_empty());
             assert!(!rule.label.is_empty());
             assert!(!rule.description.is_empty());
@@ -322,7 +339,7 @@ mod tests {
 
     #[test]
     fn builtin_rules_cover_all_safety_levels() {
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         assert!(rules.iter().any(|r| r.safety == Safety::Safe));
         assert!(rules.iter().any(|r| r.safety == Safety::Caution));
         assert!(rules.iter().any(|r| r.safety == Safety::Review));
@@ -330,7 +347,7 @@ mod tests {
 
     #[test]
     fn needs_admin_rules_are_excluded_unless_elevated() {
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         let mut admin_ids: Vec<&str> = rules
             .iter()
             .filter(|r| r.needs_admin)
@@ -346,7 +363,7 @@ mod tests {
             ]
         );
 
-        let not_elevated = scannable_rules(false);
+        let not_elevated = scannable_rules(&Config::default(), false);
         assert_eq!(not_elevated.len(), rules.len() - admin_ids.len());
         assert!(
             not_elevated
@@ -354,7 +371,7 @@ mod tests {
                 .all(|r| !admin_ids.contains(&r.id.as_str()))
         );
 
-        let elevated = scannable_rules(true);
+        let elevated = scannable_rules(&Config::default(), true);
         assert_eq!(elevated.len(), rules.len(), "昇格時は全ルールが対象になる");
         for id in &admin_ids {
             assert!(elevated.iter().any(|r| &r.id == id));
@@ -367,7 +384,10 @@ mod tests {
         // 領域を既定 ON にしないための原則（system_temp のコメント参照）が、
         // ルールが増えても崩れないことの一般化した退行テスト（A3 / Issue #42、
         // A4 / Issue #43）。
-        for rule in builtin_rules().into_iter().filter(|r| r.needs_admin) {
+        for rule in builtin_rules(&Config::default())
+            .into_iter()
+            .filter(|r| r.needs_admin)
+        {
             assert_eq!(
                 rule.safety,
                 Safety::Review,
@@ -407,7 +427,7 @@ mod tests {
     fn system_temp_stays_review() {
         // system_temp の Safety を Safe / Caution へ引き上げてはならない
         // （NF-SAF-01。管理者領域を既定 ON にしないための二重防御の一部）。
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         let system_temp = rules.iter().find(|r| r.id == "system_temp").unwrap();
         assert_eq!(system_temp.safety, Safety::Review);
     }
@@ -426,8 +446,8 @@ mod tests {
     }
 
     #[test]
-    fn age_thresholds_match_the_specification() {
-        for rule in builtin_rules() {
+    fn default_config_keeps_the_specified_age_thresholds() {
+        for rule in builtin_rules(&Config::default()) {
             let expected = match rule.id.as_str() {
                 "old_logs" => Some(180),
                 "old_downloads" => Some(90),
@@ -442,8 +462,49 @@ mod tests {
     }
 
     #[test]
+    fn config_overrides_age_threshold_and_label() {
+        let mut config = Config::default();
+        config.age_thresholds.insert("old_logs".to_string(), 30);
+
+        let rules = builtin_rules(&config);
+        let old_logs = rules.iter().find(|r| r.id == "old_logs").unwrap();
+
+        assert_eq!(old_logs.age_threshold_days, Some(30));
+        assert!(!old_logs.label.contains("180"));
+        assert!(old_logs.label.contains("30"));
+        assert!(!old_logs.description.contains("180"));
+        assert!(old_logs.description.contains("30"));
+
+        // 上書きしていない old_downloads は既定値のまま。
+        let old_downloads = rules.iter().find(|r| r.id == "old_downloads").unwrap();
+        assert_eq!(old_downloads.age_threshold_days, Some(90));
+    }
+
+    #[test]
+    fn age_threshold_is_clamped_to_the_safe_range() {
+        let mut config = Config::default();
+        config.age_thresholds.insert("old_logs".to_string(), 0);
+        config
+            .age_thresholds
+            .insert("old_downloads".to_string(), 99999);
+
+        let rules = builtin_rules(&config);
+        let old_logs = rules.iter().find(|r| r.id == "old_logs").unwrap();
+        let old_downloads = rules.iter().find(|r| r.id == "old_downloads").unwrap();
+
+        assert_eq!(
+            old_logs.age_threshold_days,
+            Some(crate::config::AGE_THRESHOLD_MIN_DAYS)
+        );
+        assert_eq!(
+            old_downloads.age_threshold_days,
+            Some(crate::config::AGE_THRESHOLD_MAX_DAYS)
+        );
+    }
+
+    #[test]
     fn rule_text_does_not_contain_a_raw_windows_path() {
-        for rule in builtin_rules() {
+        for rule in builtin_rules(&Config::default()) {
             assert!(!rule.label.contains(':'), "id={}", rule.id);
             assert!(!rule.label.contains('\\'), "id={}", rule.id);
             assert!(!rule.description.contains(':'), "id={}", rule.id);

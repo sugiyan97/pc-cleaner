@@ -350,7 +350,13 @@ impl App {
             ui.separator();
 
             let mut changed_rule: Option<String> = None;
-            for rule in rule::scannable_rules(self.elevated) {
+            let mut changed_threshold_rule_id: Option<String> = None;
+            // `.show()` に渡すクロージャ内で `&mut self.config` を書き換えつつ
+            // `self.config` を読んで作った `Vec<Rule>` を同時に借用すると
+            // 競合するため、先にルール一覧をローカル変数へ取り出しておく
+            // （app.rs 内の他の `.show()` 呼び出しと同じパターン）。
+            let scannable_rules = rule::scannable_rules(&self.config, self.elevated);
+            for rule in &scannable_rules {
                 ui.label(&rule.label).on_hover_text(&rule.description);
                 let mut pref = self
                     .config
@@ -375,12 +381,34 @@ impl App {
                             }
                         }
                     });
+                if let Some(default_days) = rule.age_threshold_days {
+                    let mut days = self.config.age_threshold_days(&rule.id, default_days);
+                    ui.horizontal(|ui| {
+                        ui.label("しきい値（日）:");
+                        let resp = ui.add(egui::DragValue::new(&mut days).range(
+                            pc_cleaner_core::config::AGE_THRESHOLD_MIN_DAYS
+                                ..=pc_cleaner_core::config::AGE_THRESHOLD_MAX_DAYS,
+                        ));
+                        if resp.drag_stopped() || resp.lost_focus() {
+                            self.config.age_thresholds.insert(rule.id.clone(), days);
+                            changed_threshold_rule_id = Some(rule.id.clone());
+                        }
+                    });
+                    ui.small("変更すると再走査します。");
+                }
                 ui.add_space(4.0);
             }
             if let Some(rule_id) = changed_rule {
                 view::reapply_pref_for_rule(&mut self.entries, &rule_id, &self.config);
                 self.plan_dirty = true;
                 self.save_config();
+            }
+            if changed_threshold_rule_id.is_some() {
+                // old_downloads は走査時（scan.rs）にしきい値でフィルタするため、
+                // reapply_pref_for_rule（走査済みエントリへの選択反映のみ）では
+                // 不十分。しきい値の変更は必ず再走査で反映する。
+                self.save_config();
+                self.start_scan(ctx);
             }
 
             ui.separator();
@@ -399,7 +427,7 @@ impl App {
                 ui.small(format!("保存先: {}", path.display()));
             }
 
-            let future_rules = view::future_rules(self.elevated);
+            let future_rules = view::future_rules(&self.config, self.elevated);
             if !future_rules.is_empty() {
                 ui.separator();
                 ui.heading("管理者権限が必要（未対応）");

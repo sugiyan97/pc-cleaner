@@ -61,8 +61,8 @@ pub fn age_label(age_days: Option<u64>) -> String {
 ///
 /// [`pc_cleaner_core::rule::scannable_rules`] の厳密な補集合であること
 /// （`future_rules_and_scannable_rules_are_exact_complements` で検証）。
-pub fn future_rules(elevated: bool) -> Vec<Rule> {
-    builtin_rules()
+pub fn future_rules(config: &Config, elevated: bool) -> Vec<Rule> {
+    builtin_rules(config)
         .into_iter()
         .filter(|r| !r.is_permitted(elevated))
         .collect()
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
-        let rules = future_rules(false);
+        let rules = future_rules(&Config::default(), false);
         assert!(!rules.is_empty());
         assert!(rules.iter().all(|r| r.needs_admin));
         assert!(rules.iter().any(|r| r.id == "system_temp"));
@@ -218,19 +218,20 @@ mod tests {
 
     #[test]
     fn future_rules_is_empty_when_elevated() {
-        assert!(future_rules(true).is_empty());
+        assert!(future_rules(&Config::default(), true).is_empty());
     }
 
     #[test]
     fn future_rules_and_scannable_rules_are_exact_complements() {
         use pc_cleaner_core::rule::{builtin_rules, scannable_rules};
 
+        let config = Config::default();
         for elevated in [false, true] {
-            let future = future_rules(elevated);
-            let scannable = scannable_rules(elevated);
+            let future = future_rules(&config, elevated);
+            let scannable = scannable_rules(&config, elevated);
             assert_eq!(
                 future.len() + scannable.len(),
-                builtin_rules().len(),
+                builtin_rules(&config).len(),
                 "elevated={elevated}: future_rules と scannable_rules の和が全ルール数と一致すること"
             );
             for rule in &future {

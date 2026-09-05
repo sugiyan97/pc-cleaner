@@ -8,8 +8,9 @@
 use eframe::egui;
 use pc_cleaner_core::platform::Platform;
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress, DeleteRequest, ElevateError,
-    ItemOutcome, Rule, ScanEntry, ScanProgress, SkipReason, config, rule,
+    BucketBreakdown, CategoryBreakdown, Config, DeleteMode, DeleteOutcome, DeletePlan,
+    DeleteProgress, DeleteRequest, ElevateError, ItemOutcome, Rule, ScanEntry, ScanProgress,
+    SkipReason, breakdown, config, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -83,6 +84,11 @@ pub struct App {
     plan: Option<DeletePlan>,
     plan_dirty: bool,
     exclusion_map: HashMap<PathBuf, &'static str>,
+    /// `plan` の内訳（種類別 / サイズ別）。C3：プレビュー時の内訳表示。
+    /// `plan` と同じタイミング（`recompute_plan`）で再計算するため、常に
+    /// `plan` の中身と一致する（GUI 側では合計を足し算しない、F-GUI-07）。
+    breakdown: Vec<CategoryBreakdown>,
+    buckets: Vec<BucketBreakdown>,
 
     task: Task,
     rx: Option<Receiver<WorkerMsg>>,
@@ -137,6 +143,8 @@ impl App {
             plan: None,
             plan_dirty: true,
             exclusion_map: HashMap::new(),
+            breakdown: Vec::new(),
+            buckets: Vec::new(),
             task: Task::Idle,
             rx: None,
             dry_run: false,
@@ -237,6 +245,9 @@ impl App {
             pc_cleaner_core::preview(self.platform.as_ref(), &self.entries, &self.rules, mode);
         self.exclusion_map =
             view::to_exclusion_map(plan.excluded().iter().map(|e| (e.path.clone(), e.reason)));
+        let breakdown_items = breakdown::from_plan(&plan);
+        self.breakdown = breakdown::by_rule(&breakdown_items);
+        self.buckets = breakdown::by_size_bucket(&breakdown_items);
         self.plan = Some(plan);
         self.plan_dirty = false;
     }
@@ -504,6 +515,17 @@ impl App {
         let mut plan_dirty = false;
         let mut clear_outcome_clicked = false;
 
+        // 内訳（C3）。`self.breakdown` / `self.buckets` は `recompute_plan` で
+        // `self.plan` と同時に更新されるため、常に現在の選択状態を反映する。
+        let rule_index: HashMap<String, Rule> = self
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.clone()))
+            .collect();
+        let total_size_for_breakdown = plan_summary.map(|s| s.1).unwrap_or(0);
+        let category_breakdown_rows =
+            view::category_rows(&self.breakdown, &rule_index, total_size_for_breakdown);
+
         let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
         egui::TopBottomPanel::bottom("bottom")
             .frame(frame)
@@ -551,6 +573,20 @@ impl App {
                     if needs_permanent && !self.permanent {
                         ui.small(view::recycle_bin_exclusion_hint());
                     }
+                }
+                if !is_empty {
+                    egui::CollapsingHeader::new("内訳")
+                        .id_salt("bottom_breakdown")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for row in &category_breakdown_rows {
+                                ui.add(
+                                    egui::ProgressBar::new(row.fraction)
+                                        .desired_width(260.0)
+                                        .text(format!("{}  {}", row.label, row.detail)),
+                                );
+                            }
+                        });
                 }
             }
             if let Some(outcome) = &self.last_outcome {
@@ -639,6 +675,18 @@ impl App {
             .map(|item| item.path.display().to_string())
             .collect();
 
+        // 内訳（C3）。`self.breakdown` / `self.buckets` は `plan` と同じ
+        // タイミング（`recompute_plan`）で更新されるため、この確認モーダルが
+        // 見せる `plan` の内容と一致する。以降 `confirm_text` で
+        // `self.permanent_confirm_text` を可変借用するため、先に読み取っておく。
+        let rule_index: HashMap<String, Rule> = self
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.clone()))
+            .collect();
+        let category_breakdown_rows = view::category_rows(&self.breakdown, &rule_index, total_size);
+        let bucket_breakdown_rows = view::bucket_rows(&self.buckets, total_size);
+
         // `.open(&mut open)` は Window 側の閉じるボタン用に `open` を可変借用
         // し続けるため、本文クロージャの中で同じ `open` へ二重に可変借用は
         // できない。ボタン操作は別のローカル変数（proceed / cancel）で受け、
@@ -668,6 +716,31 @@ impl App {
                 if is_permanent {
                     ui.colored_label(ui.visuals().error_fg_color, "この操作は取り消せません。");
                 }
+                ui.separator();
+                egui::CollapsingHeader::new("内訳（種類別）")
+                    .id_salt("confirm_breakdown_category")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for row in &category_breakdown_rows {
+                            ui.add(
+                                egui::ProgressBar::new(row.fraction)
+                                    .desired_width(260.0)
+                                    .text(format!("{}  {}", row.label, row.detail)),
+                            );
+                        }
+                    });
+                egui::CollapsingHeader::new("内訳（サイズ別）")
+                    .id_salt("confirm_breakdown_bucket")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for row in &bucket_breakdown_rows {
+                            ui.add(
+                                egui::ProgressBar::new(row.fraction)
+                                    .desired_width(260.0)
+                                    .text(format!("{}  {}", row.label, row.detail)),
+                            );
+                        }
+                    });
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(200.0)

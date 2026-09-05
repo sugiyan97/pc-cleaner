@@ -19,8 +19,8 @@
 use clap::{Args, Parser, Subcommand};
 use pc_cleaner_core::{
     Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError, ItemOutcome,
-    ScanEntry, config, execute, human_size, platform, preview, rules_for_safeties, safety_scope,
-    scan_pipeline, should_relaunch,
+    ScanEntry, breakdown, config, execute, human_size, platform, preview, rules_for_safeties,
+    safety_scope, scan_pipeline, should_relaunch,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -290,6 +290,19 @@ fn print_plan_summary(plan: &DeletePlan) {
             ""
         }
     );
+    // 種類別の内訳（C3 / GUI と同じ集計ロジックを core で共有する）。
+    let by_rule = breakdown::by_rule(&breakdown::from_plan(plan));
+    if !by_rule.is_empty() {
+        println!("内訳（種類別）:");
+        for category in &by_rule {
+            println!(
+                "  {:<16} {} 件 / {}",
+                category.rule_id,
+                category.item_count,
+                human_size(category.total_size)
+            );
+        }
+    }
     for item in plan.items() {
         println!("  {:<16} {}", item.rule_id, item.path.display());
     }

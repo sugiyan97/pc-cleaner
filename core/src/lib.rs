@@ -15,6 +15,7 @@ pub mod breakdown;
 pub mod config;
 pub mod delete;
 pub mod entry;
+pub mod export;
 pub mod format;
 pub mod history;
 pub mod inspect;
@@ -32,6 +33,7 @@ pub use delete::{
     PlannedDeletion, execute, execute_with_progress, preview,
 };
 pub use entry::{DuplicateInfo, ScanEntry};
+pub use export::{ExportError, plan_to_csv, plan_to_json, scan_to_csv, scan_to_json};
 pub use format::human_size;
 pub use history::{History, HistoryEntry};
 pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};

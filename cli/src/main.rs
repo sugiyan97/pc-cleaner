@@ -16,15 +16,27 @@
 
 #![deny(unsafe_code)]
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use pc_cleaner_core::{
     AuditRecord, Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError,
-    ItemOutcome, ScanEntry, audit, breakdown, config, execute, history, human_size, platform,
-    preview, rules_for_safeties, safety_scope, scan_pipeline, should_relaunch,
+    ItemOutcome, ScanEntry, audit, breakdown, config, execute, export, history, human_size,
+    platform, preview, rules_for_safeties, safety_scope, scan_pipeline, should_relaunch,
 };
+use std::fs;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::SystemTime;
+
+/// `scan` / `clean` の出力形式（D2 / Issue #52）。`Text`（既定）は従来通りの
+/// 人間向け一覧を stdout に出す。`Json` / `Csv` は走査結果・削除計画を機械
+/// 可読な形でエクスポートする（削除の挙動そのものは変えない、F-CLI-09）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+    Csv,
+}
 
 #[derive(Parser)]
 #[command(name = "pc-cleaner", about = "手動選択型ディスク掃除ツール", version)]
@@ -67,6 +79,14 @@ struct ScopeArgs {
     /// 管理者として起動し直し、現在のプロセスは終了する（A2 / Issue #41）。
     #[arg(long)]
     admin: bool,
+    /// 出力形式（D2 / Issue #52）。`json` / `csv` を指定すると、走査結果を
+    /// 機械可読な形でエクスポートする（削除は行わない、F-CLI-02 は不変）。
+    #[arg(long, value_enum, default_value = "text")]
+    format: OutputFormat,
+    /// エクスポート先ファイル。省略時は stdout に出力する
+    /// （`--format text` のときは無視される）。
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -87,6 +107,16 @@ struct CleanArgs {
     /// 管理者として起動し直し、現在のプロセスは終了する（A2 / Issue #41）。
     #[arg(long)]
     admin: bool,
+    /// 出力形式（D2 / Issue #52）。`json` / `csv` を指定すると、削除計画
+    /// （プレビュー）を機械可読な形でエクスポートする。削除の挙動そのもの
+    /// は変えない：`--format json` 単体で `clean` を実行すれば通常どおり
+    /// 削除が実行される（F-CLI-09）。
+    #[arg(long, value_enum, default_value = "text")]
+    format: OutputFormat,
+    /// エクスポート先ファイル。省略時は stdout に出力する
+    /// （`--format text` のときは無視される）。
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 
 impl Command {
@@ -124,7 +154,7 @@ fn main() -> ExitCode {
     let config = load_config(platform.as_ref());
 
     match cli.command {
-        Command::Scan(args) => run_scan(platform.as_ref(), &config, args.all),
+        Command::Scan(args) => run_scan(platform.as_ref(), &config, args),
         Command::Clean(args) => run_clean(platform.as_ref(), &config, args),
         Command::Log(args) => run_log(platform.as_ref(), args),
     }
@@ -192,10 +222,26 @@ fn scan_and_apply_prefs(
     (rules, entries)
 }
 
-fn run_scan(platform: &dyn platform::Platform, config: &Config, all: bool) -> ExitCode {
-    let (_rules, entries) = scan_and_apply_prefs(platform, config, all);
-    print_scan_report(&entries);
-    ExitCode::SUCCESS
+fn run_scan(platform: &dyn platform::Platform, config: &Config, args: ScopeArgs) -> ExitCode {
+    let (rules, entries) = scan_and_apply_prefs(platform, config, args.all);
+
+    match args.format {
+        OutputFormat::Text => {
+            print_scan_report(&entries);
+            ExitCode::SUCCESS
+        }
+        OutputFormat::Json => match export::scan_to_json(&entries, &rules) {
+            Ok(data) => emit_export(&data, args.output.as_deref(), entries.len()),
+            Err(e) => {
+                eprintln!("エクスポートに失敗しました: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        OutputFormat::Csv => {
+            let data = export::scan_to_csv(&entries, &rules);
+            emit_export(&data, args.output.as_deref(), entries.len())
+        }
+    }
 }
 
 fn run_clean(platform: &dyn platform::Platform, config: &Config, args: CleanArgs) -> ExitCode {
@@ -210,22 +256,65 @@ fn run_clean(platform: &dyn platform::Platform, config: &Config, args: CleanArgs
 
     let mode = DeleteMode::resolve(config, initial_request);
     let plan = preview(platform, &entries, &rules, mode);
-    print_plan_summary(&plan);
+    if args.format == OutputFormat::Text {
+        print_plan_summary(&plan);
+    }
 
     let final_plan = if args.permanent && !args.dry_run && !plan.is_empty() {
-        if args.yes || confirm_permanent(plan.item_count(), plan.total_size()) {
+        let confirmed = if args.yes {
+            true
+        } else if args.format == OutputFormat::Text {
+            confirm_permanent(plan.item_count(), plan.total_size())
+        } else {
+            // 機械可読な出力を要求されている場合、対話プロンプトは自動化を
+            // 壊すため出さない。安全側に倒し、確認なしでは完全削除を実行
+            // しない（F-DEL-06）。
+            eprintln!(
+                "--permanent は --format text 以外では --yes と併用してください（対話確認は省略されました）。"
+            );
+            false
+        };
+        if confirmed {
             let confirmed_mode = DeleteMode::resolve(config, DeleteRequest::permanent_confirmed());
             preview(platform, &entries, &rules, confirmed_mode)
         } else {
-            println!("キャンセルしました。");
+            if args.format == OutputFormat::Text {
+                println!("キャンセルしました。");
+            }
             plan
         }
     } else {
         plan
     };
 
+    // final_plan は execute() に値で渡すと消費されるため、エクスポートは
+    // その前に行う（`export.rs` は不変参照しか取らず、消費しない）。
+    if args.format != OutputFormat::Text {
+        let export_result = match args.format {
+            OutputFormat::Json => {
+                export::plan_to_json(&final_plan, &rules).map_err(|e| e.to_string())
+            }
+            OutputFormat::Csv => Ok(export::plan_to_csv(&final_plan, &rules)),
+            OutputFormat::Text => unreachable!(),
+        };
+        match export_result {
+            Ok(data) => {
+                let code = emit_export(&data, args.output.as_deref(), final_plan.item_count());
+                if code != ExitCode::SUCCESS {
+                    return code;
+                }
+            }
+            Err(e) => {
+                eprintln!("エクスポートに失敗しました: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let outcome = execute(platform, final_plan);
-    print_outcome(&outcome);
+    if args.format == OutputFormat::Text {
+        print_outcome(&outcome);
+    }
     if !outcome.is_dry_run() {
         let run_id = audit::next_run_id(SystemTime::now());
         record_history(platform, &outcome, run_id);
@@ -252,6 +341,33 @@ fn confirm_permanent(item_count: usize, total_size: u64) -> bool {
         return false;
     }
     is_affirmative(&input)
+}
+
+/// エクスポートデータ（JSON/CSV）を `output`（指定時はファイル、未指定なら
+/// stdout）へ書き出す（D2 / Issue #52）。`--format json|csv` かつ `--output`
+/// 未指定のときは、機械可読データだけを stdout に出す必要があるため、詳細な
+/// 一覧・サマリ（`print_scan_report` / `print_plan_summary` 等）は呼び出し
+/// 側で呼ばない（自動化のパイプにテキストが混ざるのを防ぐ、F-CLI-10）。
+fn emit_export(data: &str, output: Option<&Path>, item_count: usize) -> ExitCode {
+    match output {
+        Some(path) => match fs::write(path, data) {
+            Ok(()) => {
+                println!("{item_count} 件を書き出しました: {}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("書き出しに失敗しました（{}）: {e}", path.display());
+                ExitCode::FAILURE
+            }
+        },
+        None => {
+            print!("{data}");
+            if !data.ends_with('\n') {
+                println!();
+            }
+            ExitCode::SUCCESS
+        }
+    }
 }
 
 fn is_affirmative(input: &str) -> bool {
@@ -481,9 +597,62 @@ mod tests {
                 assert!(args.yes);
                 assert!(!args.all);
                 assert!(!args.admin);
+                assert_eq!(args.format, OutputFormat::Text);
+                assert_eq!(args.output, None);
             }
             _ => panic!("expected Clean"),
         }
+    }
+
+    #[test]
+    fn cli_parses_format_and_output_on_scan_and_clean() {
+        let cli = Cli::try_parse_from([
+            "pc-cleaner",
+            "scan",
+            "--format",
+            "json",
+            "--output",
+            "out.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Scan(args) => {
+                assert_eq!(args.format, OutputFormat::Json);
+                assert_eq!(args.output, Some(PathBuf::from("out.json")));
+            }
+            _ => panic!("expected Scan"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["pc-cleaner", "clean", "--dry-run", "--format", "csv"]).unwrap();
+        match cli.command {
+            Command::Clean(args) => {
+                assert_eq!(args.format, OutputFormat::Csv);
+                assert_eq!(args.output, None);
+            }
+            _ => panic!("expected Clean"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unknown_format_value() {
+        assert!(Cli::try_parse_from(["pc-cleaner", "scan", "--format", "xml"]).is_err());
+    }
+
+    #[test]
+    fn emit_export_writes_data_to_output_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        let code = emit_export("{}", Some(path.as_path()), 3);
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    #[test]
+    fn emit_export_fails_when_output_path_is_invalid() {
+        let path = Path::new("/nonexistent-dir-xyz/out.json");
+        let code = emit_export("{}", Some(path), 0);
+        assert_eq!(code, ExitCode::FAILURE);
     }
 
     #[test]

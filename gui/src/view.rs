@@ -4,8 +4,12 @@
 //! （`platform/windows.rs` が純粋層とバインディング層に分かれているのと
 //! 同じ考え方）。
 
+use pc_cleaner_core::format::relative_days;
 use pc_cleaner_core::rule::builtin_rules;
-use pc_cleaner_core::{Config, Rule, Safety, ScanEntry, SkipReason, apply_rule_prefs};
+use pc_cleaner_core::{
+    BucketBreakdown, CategoryBreakdown, Config, History, Rule, Safety, ScanEntry, SkipReason,
+    apply_rule_prefs,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -55,14 +59,34 @@ pub fn age_label(age_days: Option<u64>) -> String {
     }
 }
 
+/// エントリのサイズが `threshold` 以上のとき、表示用のバッジ文言を返す
+/// （C2 / Issue #48）。`threshold` が `None`（そのルールでは大容量注意を
+/// 出さない）のときは常に `None`。
+pub fn large_file_badge(size: u64, threshold: Option<u64>) -> Option<String> {
+    let threshold = threshold?;
+    (size >= threshold).then(|| format!("⚠ 大容量（{}）", human_size(size)))
+}
+
+/// エントリが重複ファイルグループに属するとき、表示用のバッジ文言を返す
+/// （C2 / Issue #48）。グループの代表（`is_primary`）には出さない：削除して
+/// よいのは「他に残っている」側であることを示すのが目的で、代表自身に注意書き
+/// を出すと紛らわしいため。
+pub fn duplicate_badge(duplicate: Option<pc_cleaner_core::DuplicateInfo>) -> Option<String> {
+    let info = duplicate?;
+    if info.is_primary {
+        return None;
+    }
+    Some(format!("⧉ 重複（他に{}件）", info.group_size - 1))
+}
+
 /// 現在の昇格状態では対象にできない（`needs_admin` かつ未昇格の）ルールを
 /// 返す。一覧に「管理者権限が必要」として別枠表示するために使う
 /// （NF-SAF-05 / A1 / Issue #40）。
 ///
 /// [`pc_cleaner_core::rule::scannable_rules`] の厳密な補集合であること
 /// （`future_rules_and_scannable_rules_are_exact_complements` で検証）。
-pub fn future_rules(elevated: bool) -> Vec<Rule> {
-    builtin_rules()
+pub fn future_rules(config: &Config, elevated: bool) -> Vec<Rule> {
+    builtin_rules(config)
         .into_iter()
         .filter(|r| !r.is_permitted(elevated))
         .collect()
@@ -178,6 +202,101 @@ pub fn group_failures(failures: &[(PathBuf, String)]) -> Vec<(String, Vec<PathBu
     result
 }
 
+/// 内訳1行分の表示用データ（C3：プレビュー時の内訳表示）。`egui` に依存せず、
+/// バーの長さは `fraction`（0.0〜1.0）として渡すだけにする（実際の
+/// `ProgressBar` 描画は `app.rs` が行う）。
+pub struct BreakdownRow {
+    /// 表示名（ルールラベルまたはサイズ帯ラベル）。
+    pub label: String,
+    /// 件数・サイズを添えた補足テキスト。
+    pub detail: String,
+    /// 全体に対する比率（0.0〜1.0）。`total_size == 0` のときは 0.0。
+    pub fraction: f32,
+}
+
+/// 種類別（ルール別）の内訳行を作る。`rules` にラベルが無いルール ID は、
+/// `ui_central` の行表示（app.rs 462行目付近）と同じフォールバックで
+/// `rule_id` をそのまま表示名にする。
+pub fn category_rows(
+    breakdown: &[CategoryBreakdown],
+    rules: &HashMap<String, Rule>,
+    total_size: u64,
+) -> Vec<BreakdownRow> {
+    breakdown
+        .iter()
+        .map(|b| {
+            let label = rules
+                .get(&b.rule_id)
+                .map(|r| r.label.clone())
+                .unwrap_or_else(|| b.rule_id.clone());
+            BreakdownRow {
+                label,
+                detail: format!("{} 件 / {}", b.item_count, human_size(b.total_size)),
+                fraction: if total_size == 0 {
+                    0.0
+                } else {
+                    b.total_size as f32 / total_size as f32
+                },
+            }
+        })
+        .collect()
+}
+
+/// サイズ帯別の内訳行を作る。空の帯（`item_count == 0`）は表示層で除く
+/// （core の `by_size_bucket` は合計の完全性を保つため常に全帯を返すが、
+/// 表示上は該当なしの帯を並べても意味がないため）。
+pub fn bucket_rows(breakdown: &[BucketBreakdown], total_size: u64) -> Vec<BreakdownRow> {
+    breakdown
+        .iter()
+        .filter(|b| b.item_count > 0)
+        .map(|b| BreakdownRow {
+            label: b.bucket.label().to_string(),
+            detail: format!("{} 件 / {}", b.item_count, human_size(b.total_size)),
+            fraction: if total_size == 0 {
+                0.0
+            } else {
+                b.total_size as f32 / total_size as f32
+            },
+        })
+        .collect()
+}
+
+/// 履歴一覧の1行分の表示用データ（C4 / Issue #50）。
+pub struct HistoryRow {
+    /// 実行時刻の相対表現（例: "3日前"）。
+    pub when: String,
+    /// 解放容量・件数のまとめ。
+    pub summary: String,
+}
+
+/// `history` から、新しい順に最大 `limit` 件の表示行を作る。
+///
+/// `now_secs`（UNIX epoch 秒）は呼び出し側（GUI）が渡す：本モジュールは
+/// `egui` 非依存の純粋ロジックに保つため、現在時刻を自ら参照しない
+/// （`recommend.rs` が現在時刻を参照しないのと同じ方針）。
+pub fn history_rows(history: &History, now_secs: u64, limit: usize) -> Vec<HistoryRow> {
+    history
+        .recent(limit)
+        .into_iter()
+        .map(|entry| {
+            let seconds_ago = now_secs.saturating_sub(entry.timestamp_secs);
+            HistoryRow {
+                when: relative_days(seconds_ago),
+                summary: format!(
+                    "{} 解放 / {} 件{}",
+                    human_size(entry.freed_bytes),
+                    entry.deleted_count,
+                    if entry.permanent {
+                        "（完全削除）"
+                    } else {
+                        ""
+                    }
+                ),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,8 +326,46 @@ mod tests {
     }
 
     #[test]
+    fn large_file_badge_is_none_without_a_threshold() {
+        assert_eq!(large_file_badge(1_000_000_000, None), None);
+    }
+
+    #[test]
+    fn large_file_badge_appears_at_or_above_threshold() {
+        assert_eq!(large_file_badge(999, Some(1_000)), None);
+        assert!(large_file_badge(1_000, Some(1_000)).is_some());
+        assert!(large_file_badge(2_000, Some(1_000)).is_some());
+    }
+
+    #[test]
+    fn duplicate_badge_is_none_for_primary_or_missing() {
+        use pc_cleaner_core::DuplicateInfo;
+        assert_eq!(duplicate_badge(None), None);
+        assert_eq!(
+            duplicate_badge(Some(DuplicateInfo {
+                group_id: 0,
+                group_size: 3,
+                is_primary: true,
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn duplicate_badge_shows_remaining_count_for_non_primary() {
+        use pc_cleaner_core::DuplicateInfo;
+        let badge = duplicate_badge(Some(DuplicateInfo {
+            group_id: 0,
+            group_size: 3,
+            is_primary: false,
+        }))
+        .unwrap();
+        assert!(badge.contains('2'));
+    }
+
+    #[test]
     fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
-        let rules = future_rules(false);
+        let rules = future_rules(&Config::default(), false);
         assert!(!rules.is_empty());
         assert!(rules.iter().all(|r| r.needs_admin));
         assert!(rules.iter().any(|r| r.id == "system_temp"));
@@ -218,19 +375,20 @@ mod tests {
 
     #[test]
     fn future_rules_is_empty_when_elevated() {
-        assert!(future_rules(true).is_empty());
+        assert!(future_rules(&Config::default(), true).is_empty());
     }
 
     #[test]
     fn future_rules_and_scannable_rules_are_exact_complements() {
         use pc_cleaner_core::rule::{builtin_rules, scannable_rules};
 
+        let config = Config::default();
         for elevated in [false, true] {
-            let future = future_rules(elevated);
-            let scannable = scannable_rules(elevated);
+            let future = future_rules(&config, elevated);
+            let scannable = scannable_rules(&config, elevated);
             assert_eq!(
                 future.len() + scannable.len(),
-                builtin_rules().len(),
+                builtin_rules(&config).len(),
                 "elevated={elevated}: future_rules と scannable_rules の和が全ルール数と一致すること"
             );
             for rule in &future {
@@ -278,6 +436,8 @@ mod tests {
             file_count: 1,
             modified: None,
             age_days: None,
+            in_use: None,
+            duplicate: None,
             recommended,
             reason: String::new(),
             selected,
@@ -343,5 +503,131 @@ mod tests {
     #[test]
     fn elevate_confirm_text_is_non_empty() {
         assert!(!elevate_confirm_text().is_empty());
+    }
+
+    fn test_rule(id: &str, label: &str) -> Rule {
+        Rule {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: String::new(),
+            base: pc_cleaner_core::KnownDir::UserTemp,
+            match_kind: pc_cleaner_core::MatchKind::All,
+            needs_admin: false,
+            safety: Safety::Safe,
+            age_threshold_days: None,
+            large_file_threshold_bytes: None,
+        }
+    }
+
+    fn history_entry(
+        timestamp_secs: u64,
+        freed_bytes: u64,
+        deleted_count: usize,
+    ) -> pc_cleaner_core::HistoryEntry {
+        pc_cleaner_core::HistoryEntry {
+            timestamp_secs,
+            freed_bytes,
+            deleted_count,
+            failed_count: 0,
+            permanent: false,
+        }
+    }
+
+    #[test]
+    fn category_rows_resolves_labels_from_rules() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "user_temp".to_string(),
+            item_count: 3,
+            file_count: 10,
+            total_size: 50,
+        }];
+        let mut rules = HashMap::new();
+        rules.insert(
+            "user_temp".to_string(),
+            test_rule("user_temp", "ユーザー一時ファイル"),
+        );
+
+        let rows = category_rows(&breakdown, &rules, 100);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "ユーザー一時ファイル");
+        assert_eq!(rows[0].detail, "3 件 / 50 B");
+        assert!((rows[0].fraction - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn category_rows_falls_back_to_rule_id_when_rule_unknown() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "unknown_rule".to_string(),
+            item_count: 1,
+            file_count: 1,
+            total_size: 10,
+        }];
+        let rules = HashMap::new();
+
+        let rows = category_rows(&breakdown, &rules, 10);
+        assert_eq!(rows[0].label, "unknown_rule");
+    }
+
+    #[test]
+    fn rows_have_zero_fraction_when_total_is_zero() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "a".to_string(),
+            item_count: 0,
+            file_count: 0,
+            total_size: 0,
+        }];
+        let rows = category_rows(&breakdown, &HashMap::new(), 0);
+        assert_eq!(rows[0].fraction, 0.0);
+
+        let buckets = vec![pc_cleaner_core::BucketBreakdown {
+            bucket: pc_cleaner_core::SizeBucket::UnderMib,
+            item_count: 1,
+            total_size: 0,
+        }];
+        let bucket_rows = bucket_rows(&buckets, 0);
+        assert_eq!(bucket_rows[0].fraction, 0.0);
+    }
+
+    #[test]
+    fn bucket_rows_omit_empty_buckets() {
+        let buckets = vec![
+            pc_cleaner_core::BucketBreakdown {
+                bucket: pc_cleaner_core::SizeBucket::UnderMib,
+                item_count: 2,
+                total_size: 20,
+            },
+            pc_cleaner_core::BucketBreakdown {
+                bucket: pc_cleaner_core::SizeBucket::Mib1To10,
+                item_count: 0,
+                total_size: 0,
+            },
+        ];
+        let rows = bucket_rows(&buckets, 20);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "1MB未満");
+    }
+
+    #[test]
+    fn history_rows_are_newest_first_and_respect_the_limit() {
+        let mut history = History::default();
+        for i in 0..5u64 {
+            history
+                .entries
+                .push(history_entry(i * 1000, 1024 * (i + 1), i as usize + 1));
+        }
+        let now_secs = 5000;
+        let rows = history_rows(&history, now_secs, 2);
+        assert_eq!(rows.len(), 2);
+        // 最新（i=4, timestamp=4000）が先頭に来ること。
+        assert!(rows[0].summary.contains("5.0 KB"));
+        assert!(rows[0].summary.contains("5 件"));
+        // 次点（i=3, timestamp=3000）。
+        assert!(rows[1].summary.contains("4.0 KB"));
+    }
+
+    #[test]
+    fn history_rows_handles_empty_history() {
+        let history = History::default();
+        assert!(history_rows(&history, 1000, 5).is_empty());
     }
 }

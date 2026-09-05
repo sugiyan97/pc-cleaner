@@ -192,6 +192,32 @@ pub trait Platform {
     /// に倒すこと（NF-SAF-01）。
     fn is_elevated(&self) -> bool;
 
+    /// `path` が他プロセスに使用中かどうかを判定する（C2 / Issue #48）。
+    ///
+    /// 判定できない場合は `None` を返す（「使用中でない」と断定しない。
+    /// NF-SAF-01）。既定実装は書き込みで開けるかどうかによる移植性のある
+    /// 近似で、Windows では `ERROR_SHARING_VIOLATION`（生の OS エラー 32）を
+    /// 「使用中」として扱う。書き込み権限が無いだけのケース
+    /// （`PermissionDenied`）は「使用中」と混同しないよう `None` に倒す。
+    /// `.create(true)` / `.truncate(true)` は使わない：ファイルを新規作成・
+    /// 変更してはならない。
+    fn is_file_in_use(&self, path: &Path) -> Option<bool> {
+        match std::fs::OpenOptions::new().write(true).open(path) {
+            Ok(_) => Some(false),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
+            #[allow(unused_variables)]
+            Err(e) => {
+                #[cfg(windows)]
+                {
+                    if e.raw_os_error() == Some(32) {
+                        return Some(true);
+                    }
+                }
+                None
+            }
+        }
+    }
+
     /// 自プロセスを管理者権限で起動し直す（F-ELV-01 / A2 / Issue #41）。
     ///
     /// `args` は新プロセスへ渡す引数列（`argv[0]` を含まない）。実行ファイルの

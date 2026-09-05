@@ -8,8 +8,9 @@
 use eframe::egui;
 use pc_cleaner_core::platform::Platform;
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteProgress, DeleteRequest, ElevateError,
-    ItemOutcome, Rule, ScanEntry, ScanProgress, SkipReason, config, rule,
+    BucketBreakdown, CategoryBreakdown, Config, DeleteMode, DeleteOutcome, DeletePlan,
+    DeleteProgress, DeleteRequest, ElevateError, History, ItemOutcome, Rule, ScanEntry,
+    ScanProgress, SkipReason, breakdown, config, history, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,6 +69,8 @@ pub struct App {
     platform: Box<dyn Platform>,
     config_path: Option<PathBuf>,
     config: Config,
+    history_path: Option<PathBuf>,
+    history: History,
     demo: bool,
     /// 現在のプロセスが管理者権限で動作しているか（起動時に一度だけ判定し
     /// 保持する。実行中に変化しないため毎フレーム問い合わせる必要はない）。
@@ -83,6 +86,11 @@ pub struct App {
     plan: Option<DeletePlan>,
     plan_dirty: bool,
     exclusion_map: HashMap<PathBuf, &'static str>,
+    /// `plan` の内訳（種類別 / サイズ別）。C3：プレビュー時の内訳表示。
+    /// `plan` と同じタイミング（`recompute_plan`）で再計算するため、常に
+    /// `plan` の中身と一致する（GUI 側では合計を足し算しない、F-GUI-07）。
+    breakdown: Vec<CategoryBreakdown>,
+    buckets: Vec<BucketBreakdown>,
 
     task: Task,
     rx: Option<Receiver<WorkerMsg>>,
@@ -112,7 +120,23 @@ impl App {
         let config_path = config::config_file_path(platform.as_ref());
         let config = config_path.as_deref().map(config::load).unwrap_or_default();
 
+        let history_path = history::history_file_path(platform.as_ref());
         let mut notices = Vec::new();
+        // `history::load` は config::load と異なり壊れたファイルを黙って
+        // 既定値へ差し替えない（実績は再現できないため）。ここで拾って
+        // 通知するが、破損したファイルを空の履歴で上書き保存はしない
+        // （`save()` を呼ばない）ので、ディスク上のファイルは調査用に残る。
+        let history = match history_path.as_deref().map(history::load) {
+            Some(Ok(history)) => history,
+            Some(Err(e)) => {
+                notices.push(format!(
+                    "履歴の読み込みに失敗しました（{e}）。過去の実績が正しく表示されない場合があります。"
+                ));
+                History::default()
+            }
+            None => History::default(),
+        };
+
         if relaunched && !elevated {
             // should_relaunch の二重防御が効いた場合。通常は起こらないが、
             // 起きた場合は静かに非昇格のまま続けるのではなく理由を伝える。
@@ -127,6 +151,8 @@ impl App {
             platform,
             config_path,
             config,
+            history_path,
+            history,
             demo,
             elevated,
             confirming_elevation: false,
@@ -137,6 +163,8 @@ impl App {
             plan: None,
             plan_dirty: true,
             exclusion_map: HashMap::new(),
+            breakdown: Vec::new(),
+            buckets: Vec::new(),
             task: Task::Idle,
             rx: None,
             dry_run: false,
@@ -199,6 +227,9 @@ impl App {
                 }
                 WorkerMsg::Delete(_) => {}
                 WorkerMsg::DeleteDone(outcome) => {
+                    if !outcome.is_dry_run() {
+                        self.record_history(&outcome);
+                    }
                     self.last_outcome = Some(outcome.into());
                     self.task = Task::Idle;
                     // 削除済みエントリが一覧に残らないよう自動で再走査する。
@@ -237,6 +268,9 @@ impl App {
             pc_cleaner_core::preview(self.platform.as_ref(), &self.entries, &self.rules, mode);
         self.exclusion_map =
             view::to_exclusion_map(plan.excluded().iter().map(|e| (e.path.clone(), e.reason)));
+        let breakdown_items = breakdown::from_plan(&plan);
+        self.breakdown = breakdown::by_rule(&breakdown_items);
+        self.buckets = breakdown::by_size_bucket(&breakdown_items);
         self.plan = Some(plan);
         self.plan_dirty = false;
     }
@@ -249,6 +283,24 @@ impl App {
         } else {
             self.notices
                 .push("この環境では設定の保存先を特定できません。".to_string());
+        }
+    }
+
+    /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
+    /// 記録に失敗しても `notices` へ警告を積むだけで、アプリの他の動作は
+    /// 妨げない（`save_config` と同じ方針）。
+    fn record_history(&mut self, outcome: &DeleteOutcome) {
+        match history::record_outcome(self.platform.as_ref(), outcome) {
+            None => {
+                self.notices
+                    .push("この環境では履歴の保存先を特定できません。".to_string());
+            }
+            Some(Err(e)) => {
+                self.notices.push(format!("履歴の記録に失敗しました: {e}"));
+            }
+            Some(Ok(history)) => {
+                self.history = history;
+            }
         }
     }
 }
@@ -350,7 +402,13 @@ impl App {
             ui.separator();
 
             let mut changed_rule: Option<String> = None;
-            for rule in rule::scannable_rules(self.elevated) {
+            let mut changed_threshold_rule_id: Option<String> = None;
+            // `.show()` に渡すクロージャ内で `&mut self.config` を書き換えつつ
+            // `self.config` を読んで作った `Vec<Rule>` を同時に借用すると
+            // 競合するため、先にルール一覧をローカル変数へ取り出しておく
+            // （app.rs 内の他の `.show()` 呼び出しと同じパターン）。
+            let scannable_rules = rule::scannable_rules(&self.config, self.elevated);
+            for rule in &scannable_rules {
                 ui.label(&rule.label).on_hover_text(&rule.description);
                 let mut pref = self
                     .config
@@ -375,12 +433,34 @@ impl App {
                             }
                         }
                     });
+                if let Some(default_days) = rule.age_threshold_days {
+                    let mut days = self.config.age_threshold_days(&rule.id, default_days);
+                    ui.horizontal(|ui| {
+                        ui.label("しきい値（日）:");
+                        let resp = ui.add(egui::DragValue::new(&mut days).range(
+                            pc_cleaner_core::config::AGE_THRESHOLD_MIN_DAYS
+                                ..=pc_cleaner_core::config::AGE_THRESHOLD_MAX_DAYS,
+                        ));
+                        if resp.drag_stopped() || resp.lost_focus() {
+                            self.config.age_thresholds.insert(rule.id.clone(), days);
+                            changed_threshold_rule_id = Some(rule.id.clone());
+                        }
+                    });
+                    ui.small("変更すると再走査します。");
+                }
                 ui.add_space(4.0);
             }
             if let Some(rule_id) = changed_rule {
                 view::reapply_pref_for_rule(&mut self.entries, &rule_id, &self.config);
                 self.plan_dirty = true;
                 self.save_config();
+            }
+            if changed_threshold_rule_id.is_some() {
+                // old_downloads は走査時（scan.rs）にしきい値でフィルタするため、
+                // reapply_pref_for_rule（走査済みエントリへの選択反映のみ）では
+                // 不十分。しきい値の変更は必ず再走査で反映する。
+                self.save_config();
+                self.start_scan(ctx);
             }
 
             ui.separator();
@@ -392,6 +472,39 @@ impl App {
             {
                 self.plan_dirty = true;
             }
+
+            ui.separator();
+            // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
+            // 保持するが、入力は MB 単位のほうが扱いやすいためここで変換する。
+            // 変更は次回の走査から反映される（rule.large_file_threshold_bytes
+            // は走査時に builtin_rules() が Config から埋め込むため）。
+            let mut large_file_mb = (self.config.large_file_threshold_bytes / (1024 * 1024)).max(1);
+            let mut rescan_needed = false;
+            ui.horizontal(|ui| {
+                ui.label("大容量ファイルのしきい値（MB）:");
+                if ui
+                    .add(egui::DragValue::new(&mut large_file_mb).range(1..=1_048_576))
+                    .on_hover_text("この値以上のファイルには「サイズが大きい」注意書きが付きます。")
+                    .changed()
+                {
+                    self.config.large_file_threshold_bytes = large_file_mb * 1024 * 1024;
+                    rescan_needed = true;
+                }
+            });
+            if ui
+                .checkbox(
+                    &mut self.config.detect_duplicates,
+                    "重複ファイルを検出する（走査が遅くなります）",
+                )
+                .changed()
+            {
+                rescan_needed = true;
+            }
+            if rescan_needed {
+                self.save_config();
+                self.start_scan(ctx);
+            }
+
             if ui.button("設定を保存").clicked() {
                 self.save_config();
             }
@@ -399,7 +512,28 @@ impl App {
                 ui.small(format!("保存先: {}", path.display()));
             }
 
-            let future_rules = view::future_rules(self.elevated);
+            ui.separator();
+            egui::CollapsingHeader::new("これまでの実績")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(format!(
+                        "累計 {} を解放（{} 回）",
+                        view::human_size(self.history.total_freed_bytes()),
+                        self.history.run_count()
+                    ));
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    for row in view::history_rows(&self.history, now_secs, 5) {
+                        ui.label(format!("{}: {}", row.when, row.summary));
+                    }
+                    if let Some(path) = &self.history_path {
+                        ui.small(format!("保存先: {}", path.display()));
+                    }
+                });
+
+            let future_rules = view::future_rules(&self.config, self.elevated);
             if !future_rules.is_empty() {
                 ui.separator();
                 ui.heading("管理者権限が必要（未対応）");
@@ -462,6 +596,18 @@ impl App {
                         ui.label(rule.map(|r| r.label.as_str()).unwrap_or(&entry.rule_id));
                         ui.label(view::human_size(entry.size));
                         ui.label(view::age_label(entry.age_days));
+                        // 大容量ファイル・重複ファイルの注意書き（C2 / Issue #48）。
+                        // 判定ロジックは持たず view の純粋ヘルパーに委譲する
+                        // （F-GUI-07）。
+                        let large_file_threshold = rule.and_then(|r| r.large_file_threshold_bytes);
+                        if let Some(badge) =
+                            view::large_file_badge(entry.size, large_file_threshold)
+                        {
+                            ui.colored_label(ui.visuals().warn_fg_color, badge);
+                        }
+                        if let Some(badge) = view::duplicate_badge(entry.duplicate) {
+                            ui.colored_label(ui.visuals().warn_fg_color, badge);
+                        }
                         if let Some(hint) = exclusion_map.get(&entry.path) {
                             ui.colored_label(ui.visuals().warn_fg_color, *hint);
                         }
@@ -503,6 +649,17 @@ impl App {
         let mut confirm_clicked = false;
         let mut plan_dirty = false;
         let mut clear_outcome_clicked = false;
+
+        // 内訳（C3）。`self.breakdown` / `self.buckets` は `recompute_plan` で
+        // `self.plan` と同時に更新されるため、常に現在の選択状態を反映する。
+        let rule_index: HashMap<String, Rule> = self
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.clone()))
+            .collect();
+        let total_size_for_breakdown = plan_summary.map(|s| s.1).unwrap_or(0);
+        let category_breakdown_rows =
+            view::category_rows(&self.breakdown, &rule_index, total_size_for_breakdown);
 
         let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
         egui::TopBottomPanel::bottom("bottom")
@@ -551,6 +708,20 @@ impl App {
                     if needs_permanent && !self.permanent {
                         ui.small(view::recycle_bin_exclusion_hint());
                     }
+                }
+                if !is_empty {
+                    egui::CollapsingHeader::new("内訳")
+                        .id_salt("bottom_breakdown")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for row in &category_breakdown_rows {
+                                ui.add(
+                                    egui::ProgressBar::new(row.fraction)
+                                        .desired_width(260.0)
+                                        .text(format!("{}  {}", row.label, row.detail)),
+                                );
+                            }
+                        });
                 }
             }
             if let Some(outcome) = &self.last_outcome {
@@ -639,6 +810,18 @@ impl App {
             .map(|item| item.path.display().to_string())
             .collect();
 
+        // 内訳（C3）。`self.breakdown` / `self.buckets` は `plan` と同じ
+        // タイミング（`recompute_plan`）で更新されるため、この確認モーダルが
+        // 見せる `plan` の内容と一致する。以降 `confirm_text` で
+        // `self.permanent_confirm_text` を可変借用するため、先に読み取っておく。
+        let rule_index: HashMap<String, Rule> = self
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.clone()))
+            .collect();
+        let category_breakdown_rows = view::category_rows(&self.breakdown, &rule_index, total_size);
+        let bucket_breakdown_rows = view::bucket_rows(&self.buckets, total_size);
+
         // `.open(&mut open)` は Window 側の閉じるボタン用に `open` を可変借用
         // し続けるため、本文クロージャの中で同じ `open` へ二重に可変借用は
         // できない。ボタン操作は別のローカル変数（proceed / cancel）で受け、
@@ -668,6 +851,31 @@ impl App {
                 if is_permanent {
                     ui.colored_label(ui.visuals().error_fg_color, "この操作は取り消せません。");
                 }
+                ui.separator();
+                egui::CollapsingHeader::new("内訳（種類別）")
+                    .id_salt("confirm_breakdown_category")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for row in &category_breakdown_rows {
+                            ui.add(
+                                egui::ProgressBar::new(row.fraction)
+                                    .desired_width(260.0)
+                                    .text(format!("{}  {}", row.label, row.detail)),
+                            );
+                        }
+                    });
+                egui::CollapsingHeader::new("内訳（サイズ別）")
+                    .id_salt("confirm_breakdown_bucket")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for row in &bucket_breakdown_rows {
+                            ui.add(
+                                egui::ProgressBar::new(row.fraction)
+                                    .desired_width(260.0)
+                                    .text(format!("{}  {}", row.label, row.detail)),
+                            );
+                        }
+                    });
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(200.0)

@@ -1,0 +1,6 @@
+# macOS など非Windows環境から x86_64-pc-windows-gnu へクロスビルドするための設定。
+# 事前に `brew install mingw-w64` と `rustup target add x86_64-pc-windows-gnu` が必要。
+# ネイティブ Windows / CI (windows-latest, msvc ターゲット) には影響しない。
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-gcc-ar"

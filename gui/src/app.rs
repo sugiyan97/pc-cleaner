@@ -79,6 +79,11 @@ pub struct App {
     /// （`history` と異なり毎回ファイル全体を読み直さない。`record_audit`
     /// 参照）。
     audit_records: Vec<pc_cleaner_core::AuditRecord>,
+    /// ルール定義ファイル（`<config_dir>/rules.json` / D4 / Issue #54）の
+    /// パス。`config_path` と同じく起動時に一度だけ解決する。実際の読込・
+    /// 検証は走査ワーカー（`task::spawn_scan`）が毎回行う（`RuleSet` 自体は
+    /// `App` に保持しない。ルール一覧は既存の `self.rules` で十分なため）。
+    rules_path: Option<PathBuf>,
     demo: bool,
     /// 現在のプロセスが管理者権限で動作しているか（起動時に一度だけ判定し
     /// 保持する。実行中に変化しないため毎フレーム問い合わせる必要はない）。
@@ -165,6 +170,8 @@ impl App {
             None => Vec::new(),
         };
 
+        let rules_path = pc_cleaner_core::ruleset::rules_file_path(platform.as_ref());
+
         App {
             platform,
             config_path,
@@ -173,6 +180,7 @@ impl App {
             history,
             audit_path,
             audit_records,
+            rules_path,
             demo,
             elevated,
             confirming_elevation: false,
@@ -235,9 +243,19 @@ impl App {
                     self.skipped.push((rule_id, reason));
                 }
                 WorkerMsg::Scan(_) => {}
-                WorkerMsg::ScanDone { rules, entries } => {
+                WorkerMsg::ScanDone {
+                    rules,
+                    entries,
+                    rule_issues,
+                } => {
                     self.rules = rules;
                     self.entries = entries;
+                    // ルール定義ファイル（D4 / Issue #54）の検証で見つかった
+                    // 問題は、履歴・監査ログの読込失敗と同じく notices へ積む
+                    // だけで、走査自体は組み込みルールのみで続行済み。
+                    for issue in rule_issues {
+                        self.notices.push(format!("ルール定義: {issue}"));
+                    }
                     self.task = Task::Idle;
                     self.plan_dirty = true;
                     keep_receiver = false;
@@ -552,6 +570,19 @@ impl App {
             {
                 rescan_needed = true;
             }
+            if ui
+                .checkbox(
+                    &mut self.config.user_rules_enabled,
+                    "ルール定義ファイルを読み込む",
+                )
+                .on_hover_text(
+                    "rules.json による組み込みルールの上書き・追加ルールを反映します（D4）。\
+                     オフにすると組み込みルールのみで走査します。",
+                )
+                .changed()
+            {
+                rescan_needed = true;
+            }
             if rescan_needed {
                 self.save_config();
                 self.start_scan(ctx);
@@ -605,6 +636,17 @@ impl App {
                     }
                     if let Some(path) = &self.audit_path {
                         ui.small(format!("保存先: {}", path.display()));
+                    }
+                });
+
+            ui.separator();
+            egui::CollapsingHeader::new("ルール定義")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let user_defined = self.rules.iter().filter(|r| r.is_user_defined).count();
+                    ui.label(format!("ユーザー定義ルール: {user_defined} 件"));
+                    if let Some(path) = &self.rules_path {
+                        ui.small(format!("読込元: {}", path.display()));
                     }
                 });
 

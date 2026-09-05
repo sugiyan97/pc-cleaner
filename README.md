@@ -33,6 +33,7 @@ Rust のビルド環境は不要です。[Releases](https://github.com/sugiyan97
 | モジュール | 内容 |
 |---|---|
 | `core/src/rule.rs` | 掃除ルール（許可リスト）の型定義と初期ルールセット |
+| `core/src/ruleset.rs` | ルール定義ファイル（`rules.json`）による組み込みルールの上書き・追加ルールの検証・解決 |
 | `core/src/entry.rs` | 走査結果の候補エントリ（`ScanEntry`） |
 | `core/src/platform/` | OS 固有知識を隠蔽する `Platform` trait、Windows 実装、他 OS 向け最小スタブ |
 | `core/src/scan.rs` | ルールの基点配下を走査し `ScanEntry` を生成する走査機能 |
@@ -59,6 +60,38 @@ pc-cleaner log --run <RUN_ID> # 指定した実行分のみ表示する
 `log` は `clean` の実行結果を記録した削除ログ（`<config_dir>/deletion_log.jsonl`）を表示するだけで、何も削除しません。誤削除が起きた際の追跡用に、実行のたびにパス付きで項目単位の記録を残します（既定で有効。無効化する場合は `config.json` の `audit_log_enabled` を `false` にするか、GUI の「削除ログを記録する」チェックボックスを外してください）。
 
 `--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。昇格すると、管理者権限が必要な領域（`system_temp` = `C:\Windows\Temp`）も走査・削除の対象になります。ただし既定では選択されず（Safety: Review）、内容を確認したうえで手動で選択する必要があります。
+
+#### ルール定義ファイル（`rules.json`）
+
+`<config_dir>/rules.json` を置くと、組み込みルールの一部設定を上書きしたり、独自のルールを追加したりできます（無効化する場合は `config.json` の `user_rules_enabled` を `false` にするか、GUI の「ルール定義ファイルを読み込む」チェックボックスを外してください）。
+
+```json
+{
+  "schema_version": 1,
+  "overrides": {
+    "old_logs": { "age_threshold_days": 365 }
+  },
+  "rules": [
+    {
+      "id": "my_app_cache",
+      "label": "MyApp のキャッシュ",
+      "description": "MyApp が再生成する一時データです。",
+      "base": "LocalAppData",
+      "match": { "kind": "Extension", "extensions": ["tmp", "cache"] },
+      "safety": "Caution"
+    }
+  ]
+}
+```
+
+安全のため、次の制約があります（ファイルからこれらを変更しようとした記述は無視され、`pc-cleaner scan`/`clean` 実行時に警告として表示されます）。
+
+- `needs_admin` はファイルから変更できません（管理者権限領域を無確認で対象化させないため）。
+- `base` に指定できるのは `UserTemp` / `LocalAppData` / `Cache` / `Downloads` / `ThumbnailCache` のみです。管理者権限領域やゴミ箱は指定できません。
+- `overrides` の `safety` はリスクを下げる方向（例: `Review` → `Safe`）には変更できません。ユーザー定義ルール（`rules`）は `safety: Safe` を指定できません（既定 `Review`、`Caution` まで昇格可）。
+- ユーザー定義ルールは最大32件までです。
+
+ファイルが存在しない・壊れている場合は組み込みルールのみで動作し、個別のルール記述に誤りがある場合もそのルールだけを無視して続行します。
 
 egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。
 

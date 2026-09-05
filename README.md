@@ -83,6 +83,23 @@ cargo fmt --all -- --check
 
 `core` は現状 Windows 固有のゴミ箱送り実装（`trash` クレート）を Windows ターゲット限定の依存として持ちますが、`core` crate 自体は macOS / Linux 上でもビルド・テストできます（`platform/windows.rs` 以外に OS 固有コードは存在しません）。CI（GitHub Actions）は `windows-latest` 上で上記コマンドを実行します。
 
+### macOS からの Windows 向けクロスビルド（ローカル動作確認用）
+
+Windows 実機を持たない場合でも、`.exe` を手元でビルドすることは可能です。
+
+```sh
+brew install mingw-w64
+rustup target add x86_64-pc-windows-gnu
+scripts/build-windows.sh
+```
+
+`dist/windows-local/` に `pc-cleaner-*.exe` / `pc-cleaner-gui-*.exe` が出力されます。生成した `.exe` を Windows 実機・VM に転送すれば動作確認できます。
+
+注意点：
+
+- 公式リリース（`.github/workflows/release.yml`）は `windows-latest` 上で **msvc** ターゲット向けにビルドしています。ここで作るのは **gnu** ターゲット（mingw-w64）向けのビルドで、配布物と完全に同一のバイナリではありません（基本的な動作は同等ですが、リンカ・ランタイムが異なります）。
+- リンカ設定は `.cargo/config.toml` の `[target.x86_64-pc-windows-gnu]` に定義済みです。他のターゲットやネイティブ Windows / CI のビルドには影響しません。
+
 ### リリース手順（メンテナ向け）
 
 `v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開する（上記「インストール」の配布物はここで作られる。署名・インストーラは対象外。`docs/requirements.md`「8. 将来拡張要件」E3 の初版範囲）。

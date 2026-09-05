@@ -8,6 +8,12 @@
 //! パス（削除対象の実パス）は記録しない。履歴ファイルが機微情報
 //! （どのファイルをいつ削除したか）を保持しないようにするため（NF-SAF-04
 //! の許可リスト方式と同様、必要最小限の情報のみを永続化する設計）。
+//!
+//! パスを含む「いつ何を削除したか」の追跡記録（誤削除時の調査用）は、本
+//! モジュールを拡張するのではなく [`crate::audit`]（`deletion_log.jsonl` /
+//! Issue #51）が別ファイル・別ポリシーで担う。本ファイルの集計目的と
+//! audit.rs の追跡目的は保持ポリシー（件数上限 vs 容量上限）・破損時の扱い
+//! （行単位でスキップ可能か）が異なるため、意図的に分離している。
 
 use crate::delete::{DeleteMethod, DeleteOutcome};
 use crate::platform::Platform;
@@ -19,6 +25,13 @@ use std::time::SystemTime;
 /// ため）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEntry {
+    /// この実行に対応する監査ログ（[`crate::audit`] / Issue #51）の
+    /// `run_id`。`0` は「対応する `run_id` が無い」ことを表す
+    /// （`#[serde(default)]` により #51 より前に書かれた `history.json` の
+    /// 既存エントリを読んでも `0` になるだけで壊れない）。将来のロールバック
+    /// 補助（D3 / Issue #53）が「この実行をまとめて元に戻す」導線に使う想定。
+    #[serde(default)]
+    pub run_id: u64,
     /// 実行時刻（UNIX epoch 秒）。`SystemTime` をそのままシリアライズすると
     /// 表現がプラットフォーム依存になり得るため、秒数に変換して保持する。
     pub timestamp_secs: u64,
@@ -65,7 +78,15 @@ impl History {
 
 /// `outcome` から履歴記録を作る。ドライラン、または削除0件（全滅失敗・
 /// 対象なし含む）の場合は記録する意味がないため `None` を返す。
-pub fn entry_from_outcome(outcome: &DeleteOutcome, now: SystemTime) -> Option<HistoryEntry> {
+///
+/// `run_id` は [`crate::audit`]（Issue #51）が発行する実行単位の識別子を
+/// そのまま埋め込む。監査ログを使わない呼び出し側（テスト等）は `0` を
+/// 渡してよい（[`HistoryEntry::run_id`] のドキュメント参照）。
+pub fn entry_from_outcome(
+    outcome: &DeleteOutcome,
+    run_id: u64,
+    now: SystemTime,
+) -> Option<HistoryEntry> {
     if outcome.is_dry_run() {
         return None;
     }
@@ -80,6 +101,7 @@ pub fn entry_from_outcome(outcome: &DeleteOutcome, now: SystemTime) -> Option<Hi
         .unwrap_or(0);
 
     Some(HistoryEntry {
+        run_id,
         timestamp_secs,
         freed_bytes: outcome.freed_bytes(),
         deleted_count,
@@ -144,11 +166,12 @@ pub fn save(history: &History, path: &Path) -> std::io::Result<()> {
 pub fn record_outcome(
     platform: &dyn Platform,
     outcome: &DeleteOutcome,
+    run_id: u64,
 ) -> Option<std::io::Result<History>> {
     let path = history_file_path(platform)?;
     Some((|| {
         let mut history = load(&path)?;
-        if let Some(entry) = entry_from_outcome(outcome, SystemTime::now()) {
+        if let Some(entry) = entry_from_outcome(outcome, run_id, SystemTime::now()) {
             push(&mut history, entry);
             save(&history, &path)?;
         }
@@ -218,6 +241,7 @@ mod tests {
 
     fn sample_entry() -> HistoryEntry {
         HistoryEntry {
+            run_id: 0,
             timestamp_secs: 1_700_000_000,
             freed_bytes: 1024,
             deleted_count: 3,
@@ -324,6 +348,22 @@ mod tests {
         assert_eq!(load(&path).unwrap(), History::default());
     }
 
+    #[test]
+    fn load_accepts_entries_written_before_run_id_existed() {
+        // #51 より前に書かれた history.json（run_id フィールドを持たない）を
+        // 読んでも壊れず、run_id は 0（「対応する実行ログが無い」）になる。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        std::fs::write(
+            &path,
+            r#"{"entries": [{"timestamp_secs": 100, "freed_bytes": 10, "deleted_count": 1, "failed_count": 0, "permanent": false}]}"#,
+        )
+        .unwrap();
+        let history = load(&path).unwrap();
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].run_id, 0);
+    }
+
     fn scannable_rule() -> Rule {
         Rule {
             id: "user_temp".to_string(),
@@ -373,7 +413,7 @@ mod tests {
         assert!(outcome.is_dry_run());
 
         assert_eq!(
-            entry_from_outcome(&outcome, SystemTime::now()),
+            entry_from_outcome(&outcome, 0, SystemTime::now()),
             None,
             "ドライランは記録しない"
         );
@@ -393,7 +433,7 @@ mod tests {
         let outcome = execute(&platform, plan);
         assert_eq!(outcome.deleted_count(), 0);
 
-        assert_eq!(entry_from_outcome(&outcome, SystemTime::now()), None);
+        assert_eq!(entry_from_outcome(&outcome, 0, SystemTime::now()), None);
     }
 
     #[test]
@@ -421,9 +461,11 @@ mod tests {
 
         let recorded = entry_from_outcome(
             &outcome,
+            7,
             SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42),
         )
         .expect("削除が発生したので記録されるはず");
+        assert_eq!(recorded.run_id, 7);
         assert_eq!(recorded.timestamp_secs, 42);
         assert_eq!(recorded.freed_bytes, outcome.freed_bytes());
         assert_eq!(recorded.deleted_count, 1);

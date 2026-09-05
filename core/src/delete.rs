@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::entry::ScanEntry;
 use crate::platform::{KnownDir, Platform};
 use crate::rule::Rule;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -83,7 +84,10 @@ impl DeleteRequest {
 }
 
 /// 削除の実行方法。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `DeleteAction` と同じ理由で `Serialize`/`Deserialize` を持つ（監査ログ・
+/// エクスポートの交換形式の一部。#51 / #52）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeleteMethod {
     /// `Platform::to_trash` によるゴミ箱送り（復旧可能、F-DEL-02）。
     Trash,
@@ -183,7 +187,13 @@ impl DeleteMode {
 // ---------------------------------------------------------------------
 
 /// 項目ごとに実際に行う削除操作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` は監査ログ（`audit.rs` / Issue #51）とエクスポート
+/// （`export.rs` / Issue #52）の交換形式の一部になる。variant 名のリネームは
+/// 既存の `deletion_log.jsonl` との互換性を壊すため、変更する場合はマイグレー
+/// ション方針を検討すること（本ファイルの `serde_representation_is_pinned`
+/// テストが変更を検知する）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeleteAction {
     /// `Platform::to_trash` でゴミ箱へ送る。
     ToTrash,
@@ -399,7 +409,10 @@ fn plan_entry(
 // ---------------------------------------------------------------------
 
 /// 個々の削除項目の結果。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `DeleteAction` と同じ理由で `Serialize`/`Deserialize` を持つ（監査ログ・
+/// エクスポートの交換形式の一部。#51 / #52）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemOutcome {
     /// 削除に成功した。
     Deleted,
@@ -1174,6 +1187,59 @@ mod tests {
         let breakdown = crate::breakdown::by_rule(&crate::breakdown::from_plan(&plan));
         let breakdown_total: u64 = breakdown.iter().map(|c| c.total_size).sum();
         assert_eq!(breakdown_total, plan.total_size());
+    }
+
+    // ---- serde 表現のピン留め（監査ログ・エクスポートの交換形式、#51 / #52）----
+
+    #[test]
+    fn delete_action_serde_representation_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&DeleteAction::ToTrash).unwrap(),
+            "\"ToTrash\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeleteAction::RemovePath).unwrap(),
+            "\"RemovePath\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeleteAction::EmptyContainer).unwrap(),
+            "\"EmptyContainer\""
+        );
+    }
+
+    #[test]
+    fn delete_method_serde_representation_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&DeleteMethod::Trash).unwrap(),
+            "\"Trash\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeleteMethod::Permanent).unwrap(),
+            "\"Permanent\""
+        );
+    }
+
+    #[test]
+    fn item_outcome_serde_representation_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&ItemOutcome::Deleted).unwrap(),
+            "\"Deleted\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ItemOutcome::NotAttempted).unwrap(),
+            "\"NotAttempted\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ItemOutcome::Missing).unwrap(),
+            "\"Missing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ItemOutcome::Failed {
+                message: "boom".to_string()
+            })
+            .unwrap(),
+            "{\"Failed\":{\"message\":\"boom\"}}"
+        );
     }
 
     #[test]

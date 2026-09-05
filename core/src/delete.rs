@@ -1140,6 +1140,36 @@ mod tests {
         assert!(bad_file.exists());
     }
 
+    // ---- 内訳（breakdown）との整合性 ----
+
+    /// 内訳の合計は、ユーザーが確認する見出しの合計（`total_size()`）と常に
+    /// 一致しなければならない（C3）。内訳表示が本体の集計とズレると、
+    /// ユーザーが確認する数字自体の信頼性が崩れるため、退行を防ぐ。
+    #[test]
+    fn breakdown_from_plan_matches_total_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let a = base.join("a.txt");
+        let b = base.join("b.txt");
+        write_file(&a, b"hello");
+        write_file(&b, b"world!!");
+
+        let platform =
+            FakePlatform::new(dir.path().join("trash")).with_dir(KnownDir::UserTemp, base);
+        let rules = vec![test_rule("user_temp", KnownDir::UserTemp, false)];
+        let entries = vec![
+            scan_entry("user_temp", a.clone(), 5, true),
+            scan_entry("user_temp", b.clone(), 7, true),
+        ];
+
+        let mode = DeleteMode::resolve(&config_with(true, false), DeleteRequest::execute());
+        let plan = preview(&platform, &entries, &rules, mode);
+
+        let breakdown = crate::breakdown::by_rule(&crate::breakdown::from_plan(&plan));
+        let breakdown_total: u64 = breakdown.iter().map(|c| c.total_size).sum();
+        assert_eq!(breakdown_total, plan.total_size());
+    }
+
     #[test]
     fn missing_file_at_execution_time_is_reported_as_missing_not_failed() {
         let dir = tempfile::tempdir().unwrap();

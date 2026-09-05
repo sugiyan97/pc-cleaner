@@ -5,7 +5,10 @@
 //! 同じ考え方）。
 
 use pc_cleaner_core::rule::builtin_rules;
-use pc_cleaner_core::{Config, Rule, Safety, ScanEntry, SkipReason, apply_rule_prefs};
+use pc_cleaner_core::{
+    BucketBreakdown, CategoryBreakdown, Config, Rule, Safety, ScanEntry, SkipReason,
+    apply_rule_prefs,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -196,6 +199,65 @@ pub fn group_failures(failures: &[(PathBuf, String)]) -> Vec<(String, Vec<PathBu
         .collect();
     result.sort_by_key(|(_, paths)| std::cmp::Reverse(paths.len()));
     result
+}
+
+/// 内訳1行分の表示用データ（C3：プレビュー時の内訳表示）。`egui` に依存せず、
+/// バーの長さは `fraction`（0.0〜1.0）として渡すだけにする（実際の
+/// `ProgressBar` 描画は `app.rs` が行う）。
+pub struct BreakdownRow {
+    /// 表示名（ルールラベルまたはサイズ帯ラベル）。
+    pub label: String,
+    /// 件数・サイズを添えた補足テキスト。
+    pub detail: String,
+    /// 全体に対する比率（0.0〜1.0）。`total_size == 0` のときは 0.0。
+    pub fraction: f32,
+}
+
+/// 種類別（ルール別）の内訳行を作る。`rules` にラベルが無いルール ID は、
+/// `ui_central` の行表示（app.rs 462行目付近）と同じフォールバックで
+/// `rule_id` をそのまま表示名にする。
+pub fn category_rows(
+    breakdown: &[CategoryBreakdown],
+    rules: &HashMap<String, Rule>,
+    total_size: u64,
+) -> Vec<BreakdownRow> {
+    breakdown
+        .iter()
+        .map(|b| {
+            let label = rules
+                .get(&b.rule_id)
+                .map(|r| r.label.clone())
+                .unwrap_or_else(|| b.rule_id.clone());
+            BreakdownRow {
+                label,
+                detail: format!("{} 件 / {}", b.item_count, human_size(b.total_size)),
+                fraction: if total_size == 0 {
+                    0.0
+                } else {
+                    b.total_size as f32 / total_size as f32
+                },
+            }
+        })
+        .collect()
+}
+
+/// サイズ帯別の内訳行を作る。空の帯（`item_count == 0`）は表示層で除く
+/// （core の `by_size_bucket` は合計の完全性を保つため常に全帯を返すが、
+/// 表示上は該当なしの帯を並べても意味がないため）。
+pub fn bucket_rows(breakdown: &[BucketBreakdown], total_size: u64) -> Vec<BreakdownRow> {
+    breakdown
+        .iter()
+        .filter(|b| b.item_count > 0)
+        .map(|b| BreakdownRow {
+            label: b.bucket.label().to_string(),
+            detail: format!("{} 件 / {}", b.item_count, human_size(b.total_size)),
+            fraction: if total_size == 0 {
+                0.0
+            } else {
+                b.total_size as f32 / total_size as f32
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -404,5 +466,93 @@ mod tests {
     #[test]
     fn elevate_confirm_text_is_non_empty() {
         assert!(!elevate_confirm_text().is_empty());
+    }
+
+    fn test_rule(id: &str, label: &str) -> Rule {
+        Rule {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: String::new(),
+            base: pc_cleaner_core::KnownDir::UserTemp,
+            match_kind: pc_cleaner_core::MatchKind::All,
+            needs_admin: false,
+            safety: Safety::Safe,
+            age_threshold_days: None,
+            large_file_threshold_bytes: None,
+        }
+    }
+
+    #[test]
+    fn category_rows_resolves_labels_from_rules() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "user_temp".to_string(),
+            item_count: 3,
+            file_count: 10,
+            total_size: 50,
+        }];
+        let mut rules = HashMap::new();
+        rules.insert(
+            "user_temp".to_string(),
+            test_rule("user_temp", "ユーザー一時ファイル"),
+        );
+
+        let rows = category_rows(&breakdown, &rules, 100);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "ユーザー一時ファイル");
+        assert_eq!(rows[0].detail, "3 件 / 50 B");
+        assert!((rows[0].fraction - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn category_rows_falls_back_to_rule_id_when_rule_unknown() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "unknown_rule".to_string(),
+            item_count: 1,
+            file_count: 1,
+            total_size: 10,
+        }];
+        let rules = HashMap::new();
+
+        let rows = category_rows(&breakdown, &rules, 10);
+        assert_eq!(rows[0].label, "unknown_rule");
+    }
+
+    #[test]
+    fn rows_have_zero_fraction_when_total_is_zero() {
+        let breakdown = vec![CategoryBreakdown {
+            rule_id: "a".to_string(),
+            item_count: 0,
+            file_count: 0,
+            total_size: 0,
+        }];
+        let rows = category_rows(&breakdown, &HashMap::new(), 0);
+        assert_eq!(rows[0].fraction, 0.0);
+
+        let buckets = vec![pc_cleaner_core::BucketBreakdown {
+            bucket: pc_cleaner_core::SizeBucket::UnderMib,
+            item_count: 1,
+            total_size: 0,
+        }];
+        let bucket_rows = bucket_rows(&buckets, 0);
+        assert_eq!(bucket_rows[0].fraction, 0.0);
+    }
+
+    #[test]
+    fn bucket_rows_omit_empty_buckets() {
+        let buckets = vec![
+            pc_cleaner_core::BucketBreakdown {
+                bucket: pc_cleaner_core::SizeBucket::UnderMib,
+                item_count: 2,
+                total_size: 20,
+            },
+            pc_cleaner_core::BucketBreakdown {
+                bucket: pc_cleaner_core::SizeBucket::Mib1To10,
+                item_count: 0,
+                total_size: 0,
+            },
+        ];
+        let rows = bucket_rows(&buckets, 20);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "1MB未満");
     }
 }

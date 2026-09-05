@@ -172,7 +172,7 @@ fn scan_and_apply_prefs(
     config: &Config,
     all: bool,
 ) -> (Vec<pc_cleaner_core::Rule>, Vec<ScanEntry>) {
-    let rules = rules_for_safeties(&safety_scope(all), platform.is_elevated());
+    let rules = rules_for_safeties(&safety_scope(all), config, platform.is_elevated());
     let entries = scan_pipeline(platform, &rules, config);
     (rules, entries)
 }

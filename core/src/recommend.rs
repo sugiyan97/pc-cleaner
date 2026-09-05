@@ -1,6 +1,7 @@
 //! 判定支援ロジック（推奨の動的補正）。F-REC-04〜08。
 
 use crate::entry::ScanEntry;
+use crate::format::human_size;
 use crate::rule::{Rule, Safety};
 
 /// [`recommend`] の戻り値。
@@ -21,14 +22,23 @@ impl Recommendation {
     }
 }
 
-/// `entry.age_days` が `Some(0)`（最終更新が本日）であることを
-/// 「使用中の可能性がある」とみなす近似。
+/// エントリが「使用中の可能性がある」かどうかを判定する（C2 / Issue #48）。
 ///
-/// 純粋関数制約（NF-MNT-02）により現在時刻を参照できないため、`entry.modified`
-/// ではなく走査時（#5）に算出済みの `age_days` のみで判定する。日単位の粗い
-/// 近似であり、ファイルハンドル参照等による精緻化は将来対応 C2 でスコープ外。
+/// 優先順位は次のとおり：
+/// 1. `entry.in_use`（走査時に `inspect::annotate_in_use` が算出済みの
+///    ファイルハンドル判定）が `Some(true)` なら、それを信頼して使用中と
+///    みなす。
+/// 2. `entry.in_use` が `Some(false)`（明確に空いていると判定できた）なら、
+///    `age_days` に関わらず使用中とはみなさない。
+/// 3. `entry.in_use` が判定不能（`None`。ディレクトリ集約エントリ・権限
+///    不足等）だった場合にのみ、`entry.age_days == Some(0)`（最終更新が
+///    本日）という粗い近似にフォールバックする。
+///
+/// 純粋関数制約（NF-MNT-02）により現在時刻・ファイル I/O を本関数から直接
+/// 参照することはできないため、いずれも走査時（#5 / `inspect`）に算出済みの
+/// 値のみで判定する。
 fn is_possibly_in_use(entry: &ScanEntry) -> bool {
-    entry.age_days == Some(0)
+    entry.in_use == Some(true) || (entry.in_use.is_none() && entry.age_days == Some(0))
 }
 
 /// 経過日数を説明する文言を生成する。`entry.modified` は参照しない
@@ -52,7 +62,37 @@ fn describe_age(age_days: Option<u64>) -> String {
 /// `entry.age_days` を合わせて提示することで、ユーザーは個別ファイルを開かず
 /// に判断できる（F-REC-01 / F-REC-08）。`Config` / `RulePref` によるユーザー
 /// 既定の上書きは本関数の責務ではなく #5 / #8 が行う。
+///
+/// 大容量ファイル・重複ファイルの注意書き（C2 / Issue #48）は推奨可否
+/// そのものには影響しない付加情報のため、[`base_recommendation`] が決めた
+/// 推奨可否はそのまま維持し、`reason` にだけ追記する。
 pub fn recommend(entry: &ScanEntry, rule: &Rule) -> Recommendation {
+    let mut recommendation = base_recommendation(entry, rule);
+
+    if let Some(threshold) = rule.large_file_threshold_bytes {
+        if entry.size >= threshold {
+            recommendation.reason.push_str(&format!(
+                "サイズが大きい（{}）ため、削除前に内容を確認することをおすすめします。",
+                human_size(entry.size)
+            ));
+        }
+    }
+
+    if let Some(info) = entry.duplicate {
+        if !info.is_primary {
+            recommendation.reason.push_str(&format!(
+                "同一内容のファイルが他に{}件あります。",
+                info.group_size - 1
+            ));
+        }
+    }
+
+    recommendation
+}
+
+/// `rule.needs_admin` / `rule.safety` / 経過日数・使用中判定に基づく基本の
+/// 推奨可否と理由を決める（大容量・重複ファイルの注意書きを含まない）。
+fn base_recommendation(entry: &ScanEntry, rule: &Rule) -> Recommendation {
     let age_note = describe_age(entry.age_days);
 
     if rule.needs_admin {
@@ -135,6 +175,7 @@ mod tests {
             needs_admin,
             safety,
             age_threshold_days,
+            large_file_threshold_bytes: None,
         }
     }
 
@@ -146,6 +187,8 @@ mod tests {
             file_count: 1,
             modified,
             age_days,
+            in_use: None,
+            duplicate: None,
             recommended: false,
             reason: String::new(),
             selected: false,
@@ -236,5 +279,101 @@ mod tests {
 
         assert_eq!(recommend(&base, &r), recommend(&with_epoch, &r));
         assert_eq!(recommend(&base, &r), recommend(&with_now, &r));
+    }
+
+    // ---- C2 / Issue #48: 使用中判定（entry.in_use）----
+
+    #[test]
+    fn in_use_flag_overrides_the_age_heuristic() {
+        // 経過日数だけ見れば十分古い（Safe なら推奨されるはず）だが、
+        // in_use = Some(true) が優先され推奨から外れること。
+        let r = rule(Safety::Safe, None, false);
+        let mut e = entry(Some(100), None);
+        e.in_use = Some(true);
+
+        let rec = recommend(&e, &r);
+        assert!(!rec.recommended);
+        assert!(rec.reason.contains("使用中"));
+    }
+
+    #[test]
+    fn unknown_in_use_falls_back_to_age_zero_heuristic() {
+        // in_use が判定不能（None）のときだけ、従来どおり age_days == 0 の
+        // 近似にフォールバックする。
+        let r = rule(Safety::Safe, None, false);
+        let mut e = entry(Some(0), None);
+        e.in_use = None;
+
+        let rec = recommend(&e, &r);
+        assert!(!rec.recommended, "in_use 不明のときは age_days==0 に倒す");
+        assert!(rec.reason.contains("使用中"));
+    }
+
+    #[test]
+    fn probe_says_free_beats_age_zero() {
+        // in_use = Some(false)（明確に空いている）と分かっていれば、
+        // age_days == 0（本日更新）であっても使用中扱いにしない。
+        let r = rule(Safety::Safe, None, false);
+        let mut e = entry(Some(0), None);
+        e.in_use = Some(false);
+
+        let rec = recommend(&e, &r);
+        assert!(rec.recommended);
+        assert!(!rec.reason.contains("使用中"));
+    }
+
+    // ---- C2 / Issue #48: 大容量ファイルの注意書き ----
+
+    #[test]
+    fn large_file_adds_a_note_without_changing_recommendation() {
+        let mut r = rule(Safety::Safe, None, false);
+        r.large_file_threshold_bytes = Some(1_000);
+
+        let mut small = entry(Some(30), None);
+        small.size = 999;
+        let small_rec = recommend(&small, &r);
+        assert!(small_rec.recommended);
+        assert!(!small_rec.reason.contains("サイズが大きい"));
+
+        let mut large = entry(Some(30), None);
+        large.size = 1_000;
+        let large_rec = recommend(&large, &r);
+        assert!(
+            large_rec.recommended,
+            "サイズ注意書きは推奨可否を変えない（情報提供のみ）"
+        );
+        assert!(large_rec.reason.contains("サイズが大きい"));
+    }
+
+    // ---- C2 / Issue #48: 重複ファイルの注意書き ----
+
+    #[test]
+    fn duplicate_note_appears_for_non_primary_entries() {
+        use crate::entry::DuplicateInfo;
+
+        let r = rule(Safety::Safe, None, false);
+
+        let mut primary = entry(Some(30), None);
+        primary.duplicate = Some(DuplicateInfo {
+            group_id: 0,
+            group_size: 3,
+            is_primary: true,
+        });
+        let primary_rec = recommend(&primary, &r);
+        assert!(!primary_rec.reason.contains("同一内容のファイルが他に"));
+
+        let mut secondary = entry(Some(30), None);
+        secondary.duplicate = Some(DuplicateInfo {
+            group_id: 0,
+            group_size: 3,
+            is_primary: false,
+        });
+        let secondary_rec = recommend(&secondary, &r);
+        assert!(secondary_rec.recommended, "重複は推奨可否を変えない");
+        assert!(
+            secondary_rec
+                .reason
+                .contains("同一内容のファイルが他に2件あります")
+        );
     }
 }

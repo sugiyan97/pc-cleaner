@@ -1,5 +1,6 @@
 //! 掃除ルール（許可リストの1項目）。判定支援の一次情報。
 
+use crate::config::Config;
 use crate::platform::KnownDir;
 
 /// ルールの安全度区分。既定の選択状態と表示方法を決定する（5.2.1）。
@@ -57,6 +58,13 @@ pub struct Rule {
     /// 初版ではルールにハードコードするが、将来 `Config` へ移設できるよう
     /// `Rule` 本体とは独立したフィールドとして分離しておく（NF-EXT-03 / 将来対応 C1）。
     pub age_threshold_days: Option<u64>,
+    /// 「サイズが大きい」と見なすしきい値（バイト単位、C2 / Issue #48）。
+    ///
+    /// `Config::large_file_threshold_bytes` から `builtin_rules` が設定する。
+    /// `recommend()` はこの値以上のエントリに注意書きを付け加えるだけで、
+    /// 推奨可否そのものは変えない。大きな注意書きを出す意味が薄いルール
+    /// （既に個別ファイル単位で確認が前提のもの等）では `None` のままでよい。
+    pub large_file_threshold_bytes: Option<u64>,
 }
 
 impl Rule {
@@ -96,8 +104,9 @@ const OLD_DOWNLOAD_THRESHOLD_DAYS: u64 = 90;
 /// `needs_admin` なルール（`system_temp`）も含む。UI は未昇格時、これらを
 /// 一覧に「管理者権限が必要」として別枠表示するため（NF-SAF-05）、昇格状態を
 /// 踏まえて走査・削除の対象だけに絞り込みたい場合は [`scannable_rules`] を
-/// 使う。
-pub fn builtin_rules() -> Vec<Rule> {
+/// 使う。`config` は #48（C2）で追加された大容量ファイルしきい値
+/// （`Config::large_file_threshold_bytes`）をルールへ持ち込むために必要になった。
+pub fn builtin_rules(config: &Config) -> Vec<Rule> {
     vec![
         Rule {
             id: "user_temp".to_string(),
@@ -111,6 +120,7 @@ pub fn builtin_rules() -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "browser_cache".to_string(),
@@ -125,6 +135,7 @@ pub fn builtin_rules() -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "thumbnail_cache".to_string(),
@@ -141,6 +152,9 @@ pub fn builtin_rules() -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Safe,
             age_threshold_days: None,
+            // サムネイルキャッシュの個々のファイルが大容量になることは
+            // ほぼ無く、大容量注意の告知に意味がないため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "recycle_bin".to_string(),
@@ -159,6 +173,9 @@ pub fn builtin_rules() -> Vec<Rule> {
             // （docs/requirements.md 5.7 も合わせて更新済み）。
             safety: Safety::Caution,
             age_threshold_days: None,
+            // 既にユーザーが「実行前に中身を確認」する前提のルールであり、
+            // 大容量注意の告知を重ねる意味が薄いため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "old_logs".to_string(),
@@ -174,6 +191,7 @@ pub fn builtin_rules() -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Caution,
             age_threshold_days: Some(OLD_LOG_THRESHOLD_DAYS),
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "old_downloads".to_string(),
@@ -188,6 +206,7 @@ pub fn builtin_rules() -> Vec<Rule> {
             needs_admin: false,
             safety: Safety::Review,
             age_threshold_days: Some(OLD_DOWNLOAD_THRESHOLD_DAYS),
+            large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
         },
         Rule {
             id: "system_temp".to_string(),
@@ -208,6 +227,8 @@ pub fn builtin_rules() -> Vec<Rule> {
             // この Safety を Safe や Caution に上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // 管理者権限領域で、既に個別確認が前提のルールのため None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "windows_update_cache".to_string(),
@@ -236,6 +257,8 @@ pub fn builtin_rules() -> Vec<Rule> {
             // 上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // system_temp と同じ理由で None のまま。
+            large_file_threshold_bytes: None,
         },
         Rule {
             id: "delivery_optimization_cache".to_string(),
@@ -262,6 +285,8 @@ pub fn builtin_rules() -> Vec<Rule> {
             // Caution に上げてはならない。
             safety: Safety::Review,
             age_threshold_days: None,
+            // system_temp と同じ理由で None のまま。
+            large_file_threshold_bytes: None,
         },
     ]
 }
@@ -272,8 +297,8 @@ pub fn builtin_rules() -> Vec<Rule> {
 /// （＝A2 の昇格を経てユーザーが明示的に管理者権限を与えた）ときは含める。
 /// 判定は [`Rule::is_permitted`] に一本化し、GUI 側の「管理者権限が必要」
 /// 表示（`gui/src/view.rs` の `future_rules`）とは厳密な補集合の関係を保つ。
-pub fn scannable_rules(elevated: bool) -> Vec<Rule> {
-    builtin_rules()
+pub fn scannable_rules(config: &Config, elevated: bool) -> Vec<Rule> {
+    builtin_rules(config)
         .into_iter()
         .filter(|r| r.is_permitted(elevated))
         .collect()
@@ -292,7 +317,7 @@ mod tests {
 
     #[test]
     fn builtin_rules_have_stable_unique_ids() {
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         let ids: HashSet<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         let expected: HashSet<&str> = [
             "user_temp",
@@ -313,7 +338,7 @@ mod tests {
 
     #[test]
     fn every_rule_has_non_empty_id_label_description() {
-        for rule in builtin_rules() {
+        for rule in builtin_rules(&Config::default()) {
             assert!(!rule.id.is_empty());
             assert!(!rule.label.is_empty());
             assert!(!rule.description.is_empty());
@@ -322,7 +347,7 @@ mod tests {
 
     #[test]
     fn builtin_rules_cover_all_safety_levels() {
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         assert!(rules.iter().any(|r| r.safety == Safety::Safe));
         assert!(rules.iter().any(|r| r.safety == Safety::Caution));
         assert!(rules.iter().any(|r| r.safety == Safety::Review));
@@ -330,7 +355,8 @@ mod tests {
 
     #[test]
     fn needs_admin_rules_are_excluded_unless_elevated() {
-        let rules = builtin_rules();
+        let config = Config::default();
+        let rules = builtin_rules(&config);
         let mut admin_ids: Vec<&str> = rules
             .iter()
             .filter(|r| r.needs_admin)
@@ -346,7 +372,7 @@ mod tests {
             ]
         );
 
-        let not_elevated = scannable_rules(false);
+        let not_elevated = scannable_rules(&config, false);
         assert_eq!(not_elevated.len(), rules.len() - admin_ids.len());
         assert!(
             not_elevated
@@ -354,7 +380,7 @@ mod tests {
                 .all(|r| !admin_ids.contains(&r.id.as_str()))
         );
 
-        let elevated = scannable_rules(true);
+        let elevated = scannable_rules(&config, true);
         assert_eq!(elevated.len(), rules.len(), "昇格時は全ルールが対象になる");
         for id in &admin_ids {
             assert!(elevated.iter().any(|r| &r.id == id));
@@ -367,7 +393,10 @@ mod tests {
         // 領域を既定 ON にしないための原則（system_temp のコメント参照）が、
         // ルールが増えても崩れないことの一般化した退行テスト（A3 / Issue #42、
         // A4 / Issue #43）。
-        for rule in builtin_rules().into_iter().filter(|r| r.needs_admin) {
+        for rule in builtin_rules(&Config::default())
+            .into_iter()
+            .filter(|r| r.needs_admin)
+        {
             assert_eq!(
                 rule.safety,
                 Safety::Review,
@@ -407,7 +436,7 @@ mod tests {
     fn system_temp_stays_review() {
         // system_temp の Safety を Safe / Caution へ引き上げてはならない
         // （NF-SAF-01。管理者領域を既定 ON にしないための二重防御の一部）。
-        let rules = builtin_rules();
+        let rules = builtin_rules(&Config::default());
         let system_temp = rules.iter().find(|r| r.id == "system_temp").unwrap();
         assert_eq!(system_temp.safety, Safety::Review);
     }
@@ -422,12 +451,13 @@ mod tests {
             needs_admin,
             safety,
             age_threshold_days: None,
+            large_file_threshold_bytes: None,
         }
     }
 
     #[test]
     fn age_thresholds_match_the_specification() {
-        for rule in builtin_rules() {
+        for rule in builtin_rules(&Config::default()) {
             let expected = match rule.id.as_str() {
                 "old_logs" => Some(180),
                 "old_downloads" => Some(90),
@@ -443,11 +473,29 @@ mod tests {
 
     #[test]
     fn rule_text_does_not_contain_a_raw_windows_path() {
-        for rule in builtin_rules() {
+        for rule in builtin_rules(&Config::default()) {
             assert!(!rule.label.contains(':'), "id={}", rule.id);
             assert!(!rule.label.contains('\\'), "id={}", rule.id);
             assert!(!rule.description.contains(':'), "id={}", rule.id);
             assert!(!rule.description.contains('\\'), "id={}", rule.id);
+        }
+    }
+
+    #[test]
+    fn large_file_threshold_bytes_is_populated_from_config() {
+        // C2 / Issue #48: Config::large_file_threshold_bytes をルールへ
+        // 持ち込むルール（user_temp / browser_cache / old_logs / old_downloads）
+        // では、設定値がそのまま反映されること。
+        let config = Config {
+            large_file_threshold_bytes: 12_345,
+            ..Config::default()
+        };
+        let rules = builtin_rules(&config);
+
+        let with_threshold = ["user_temp", "browser_cache", "old_logs", "old_downloads"];
+        for id in with_threshold {
+            let rule = rules.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(rule.large_file_threshold_bytes, Some(12_345), "id={id}");
         }
     }
 }

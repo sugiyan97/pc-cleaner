@@ -14,6 +14,7 @@ pub mod config;
 pub mod delete;
 pub mod entry;
 pub mod format;
+pub mod inspect;
 pub mod platform;
 pub mod recommend;
 pub mod rule;
@@ -25,7 +26,7 @@ pub use delete::{
     DeleteRequest, DryRunReason, ExcludedEntry, ExclusionReason, ItemOutcome, ItemResult,
     PlannedDeletion, execute, execute_with_progress, preview,
 };
-pub use entry::ScanEntry;
+pub use entry::{DuplicateInfo, ScanEntry};
 pub use format::human_size;
 pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};
 pub use recommend::Recommendation;
@@ -62,6 +63,7 @@ mod tests {
             needs_admin: false,
             safety: Safety::Caution,
             age_threshold_days: Some(180),
+            large_file_threshold_bytes: None,
         };
 
         let entry = ScanEntry {
@@ -71,6 +73,8 @@ mod tests {
             file_count: 1,
             modified: None,
             age_days: Some(200),
+            in_use: None,
+            duplicate: None,
             recommended: true,
             reason: "180日以上経過".to_string(),
             selected: false,

@@ -37,7 +37,20 @@ pub struct Config {
     pub use_trash: bool,
     /// ドライランを既定動作とするか。
     pub dry_run_default: bool,
+    /// 「サイズが大きい」と見なすしきい値（バイト単位）。C2 / Issue #48。
+    ///
+    /// `Rule::large_file_threshold_bytes` の元になる値。あくまで
+    /// `recommend()` が付け加える注意書き（`reason` への追記）のためのもので、
+    /// 推奨可否そのものには影響しない。
+    pub large_file_threshold_bytes: u64,
+    /// 走査時に重複ファイルを検出するか（C2 / Issue #48）。
+    ///
+    /// 内容ハッシュの計算を伴い走査コストが増えるため既定は `false`。
+    pub detect_duplicates: bool,
 }
+
+/// 既定の大容量ファイルしきい値（1 GiB）。
+const DEFAULT_LARGE_FILE_THRESHOLD_BYTES: u64 = 1_073_741_824;
 
 impl Default for Config {
     fn default() -> Self {
@@ -45,6 +58,8 @@ impl Default for Config {
             rule_prefs: std::collections::HashMap::new(),
             use_trash: true,
             dry_run_default: true,
+            large_file_threshold_bytes: DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
+            detect_duplicates: false,
         }
     }
 }
@@ -94,6 +109,11 @@ mod tests {
             "F-CFG-03: dry_run_default の既定値は true"
         );
         assert!(config.rule_prefs.is_empty());
+        assert_eq!(
+            config.large_file_threshold_bytes, 1_073_741_824,
+            "既定値は1 GiB"
+        );
+        assert!(!config.detect_duplicates, "走査コストのため既定は false");
     }
 
     #[test]

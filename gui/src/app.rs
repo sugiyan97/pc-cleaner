@@ -10,11 +10,12 @@ use pc_cleaner_core::platform::Platform;
 use pc_cleaner_core::{
     BucketBreakdown, CategoryBreakdown, Config, DeleteMode, DeleteOutcome, DeletePlan,
     DeleteProgress, DeleteRequest, ElevateError, History, ItemOutcome, Rule, ScanEntry,
-    ScanProgress, SkipReason, breakdown, config, history, rule,
+    ScanProgress, SkipReason, audit, breakdown, config, history, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::SystemTime;
 
 use crate::task::{self, WorkerMsg};
 use crate::view::{self, Scope};
@@ -71,6 +72,13 @@ pub struct App {
     config: Config,
     history_path: Option<PathBuf>,
     history: History,
+    /// 監査ログ（削除ログ、D1 / Issue #51）の保存先。`history_path` と同じく
+    /// 起動時に一度だけ解決する。
+    audit_path: Option<PathBuf>,
+    /// 監査ログの内容。起動時に読み込み、削除実行のたびに追記分を足す
+    /// （`history` と異なり毎回ファイル全体を読み直さない。`record_audit`
+    /// 参照）。
+    audit_records: Vec<pc_cleaner_core::AuditRecord>,
     demo: bool,
     /// 現在のプロセスが管理者権限で動作しているか（起動時に一度だけ判定し
     /// 保持する。実行中に変化しないため毎フレーム問い合わせる必要はない）。
@@ -147,12 +155,24 @@ impl App {
             );
         }
 
+        let audit_path = audit::audit_file_path(platform.as_ref());
+        let audit_records = match audit_path.as_deref().map(audit::load) {
+            Some(Ok(records)) => records,
+            Some(Err(e)) => {
+                notices.push(format!("削除ログの読み込みに失敗しました（{e}）。"));
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+
         App {
             platform,
             config_path,
             config,
             history_path,
             history,
+            audit_path,
+            audit_records,
             demo,
             elevated,
             confirming_elevation: false,
@@ -228,7 +248,9 @@ impl App {
                 WorkerMsg::Delete(_) => {}
                 WorkerMsg::DeleteDone(outcome) => {
                     if !outcome.is_dry_run() {
-                        self.record_history(&outcome);
+                        let run_id = audit::next_run_id(SystemTime::now());
+                        self.record_history(&outcome, run_id);
+                        self.record_audit(&outcome, run_id);
                     }
                     self.last_outcome = Some(outcome.into());
                     self.task = Task::Idle;
@@ -289,8 +311,8 @@ impl App {
     /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
     /// 記録に失敗しても `notices` へ警告を積むだけで、アプリの他の動作は
     /// 妨げない（`save_config` と同じ方針）。
-    fn record_history(&mut self, outcome: &DeleteOutcome) {
-        match history::record_outcome(self.platform.as_ref(), outcome) {
+    fn record_history(&mut self, outcome: &DeleteOutcome, run_id: u64) {
+        match history::record_outcome(self.platform.as_ref(), outcome, run_id) {
             None => {
                 self.notices
                     .push("この環境では履歴の保存先を特定できません。".to_string());
@@ -300,6 +322,31 @@ impl App {
             }
             Some(Ok(history)) => {
                 self.history = history;
+            }
+        }
+    }
+
+    /// 削除結果を監査ログ（`deletion_log.jsonl`）へ記録する（D1 / Issue #51）。
+    /// `record_history` と同じ方針：記録に失敗しても `notices` へ警告を積む
+    /// だけで、アプリの他の動作は妨げない。
+    fn record_audit(&mut self, outcome: &DeleteOutcome, run_id: u64) {
+        match audit::record_outcome(self.platform.as_ref(), &self.config, outcome, run_id) {
+            None => {
+                self.notices
+                    .push("この環境では削除ログの保存先を特定できません。".to_string());
+            }
+            Some(Err(e)) => {
+                self.notices
+                    .push(format!("削除ログの記録に失敗しました: {e}"));
+            }
+            Some(Ok(_)) => {
+                if self.config.audit_log_enabled {
+                    self.audit_records.extend(audit::records_from_outcome(
+                        outcome,
+                        run_id,
+                        SystemTime::now(),
+                    ));
+                }
             }
         }
     }
@@ -472,6 +519,11 @@ impl App {
             {
                 self.plan_dirty = true;
             }
+            ui.checkbox(&mut self.config.audit_log_enabled, "削除ログを記録する")
+                .on_hover_text(
+                    "いつ何を削除したかをパス付きで記録します（誤削除の追跡用）。\
+                     「これまでの実績」とは別ファイルで、無効化すると新規記録は行われません。",
+                );
 
             ui.separator();
             // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
@@ -529,6 +581,29 @@ impl App {
                         ui.label(format!("{}: {}", row.when, row.summary));
                     }
                     if let Some(path) = &self.history_path {
+                        ui.small(format!("保存先: {}", path.display()));
+                    }
+                });
+
+            ui.separator();
+            egui::CollapsingHeader::new("削除ログ")
+                .default_open(false)
+                .show(ui, |ui| {
+                    if !self.config.audit_log_enabled {
+                        ui.small(
+                            "記録を無効化しています（上の「削除ログを記録する」で再開できます）。",
+                        );
+                    }
+                    ui.label(format!("{} 件を記録", self.audit_records.len()));
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    for row in view::audit_rows(&self.audit_records, now_secs, 5) {
+                        ui.label(format!("{}: {}", row.when, row.summary))
+                            .on_hover_text(&row.path);
+                    }
+                    if let Some(path) = &self.audit_path {
                         ui.small(format!("保存先: {}", path.display()));
                     }
                 });

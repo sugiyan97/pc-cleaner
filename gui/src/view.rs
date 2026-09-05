@@ -7,8 +7,8 @@
 use pc_cleaner_core::format::relative_days;
 use pc_cleaner_core::rule::builtin_rules;
 use pc_cleaner_core::{
-    BucketBreakdown, CategoryBreakdown, Config, History, Rule, Safety, ScanEntry, SkipReason,
-    apply_rule_prefs,
+    AuditRecord, BucketBreakdown, CategoryBreakdown, Config, History, ItemOutcome, Rule, Safety,
+    ScanEntry, SkipReason, apply_rule_prefs,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -297,6 +297,41 @@ pub fn history_rows(history: &History, now_secs: u64, limit: usize) -> Vec<Histo
         .collect()
 }
 
+/// 削除ログ（監査ログ、D1 / Issue #51）の1行分の表示用データ。
+pub struct AuditRow {
+    /// 経過時間の相対表現（例: "3日前"）。
+    pub when: String,
+    /// ルール・サイズ・結果のまとめ。
+    pub summary: String,
+    /// 削除対象のパス。
+    pub path: String,
+}
+
+/// `records` から、新しい順（`records` は追記順＝古い順に並んでいる前提）に
+/// 最大 `limit` 件の表示行を作る。`history_rows` と同じく `now_secs` は
+/// 呼び出し側が渡す（本モジュールを `egui` 非依存に保つため）。
+pub fn audit_rows(records: &[AuditRecord], now_secs: u64, limit: usize) -> Vec<AuditRow> {
+    records
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|record| {
+            let seconds_ago = now_secs.saturating_sub(record.timestamp_secs);
+            let outcome = match &record.outcome {
+                ItemOutcome::Deleted => "削除".to_string(),
+                ItemOutcome::Failed { message } => format!("失敗（{message}）"),
+                ItemOutcome::Missing => "対象なし".to_string(),
+                ItemOutcome::NotAttempted => "未実行".to_string(),
+            };
+            AuditRow {
+                when: relative_days(seconds_ago),
+                summary: format!("{} {} {}", record.rule_id, human_size(record.size), outcome),
+                path: record.path.display().to_string(),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,11 +560,25 @@ mod tests {
         deleted_count: usize,
     ) -> pc_cleaner_core::HistoryEntry {
         pc_cleaner_core::HistoryEntry {
+            run_id: 0,
             timestamp_secs,
             freed_bytes,
             deleted_count,
             failed_count: 0,
             permanent: false,
+        }
+    }
+
+    fn audit_record(run_id: u64, timestamp_secs: u64, path: &str) -> AuditRecord {
+        AuditRecord {
+            run_id,
+            timestamp_secs,
+            rule_id: "user_temp".to_string(),
+            path: PathBuf::from(path),
+            size: 1024,
+            action: pc_cleaner_core::DeleteAction::ToTrash,
+            outcome: ItemOutcome::Deleted,
+            method: pc_cleaner_core::DeleteMethod::Trash,
         }
     }
 
@@ -629,5 +678,34 @@ mod tests {
     fn history_rows_handles_empty_history() {
         let history = History::default();
         assert!(history_rows(&history, 1000, 5).is_empty());
+    }
+
+    #[test]
+    fn audit_rows_are_newest_first_and_respect_the_limit() {
+        let records = vec![
+            audit_record(1, 0, "a.tmp"),
+            audit_record(1, 1000, "b.tmp"),
+            audit_record(2, 2000, "c.tmp"),
+        ];
+        let rows = audit_rows(&records, 2000, 2);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].path.ends_with("c.tmp"), "最新が先頭に来ること");
+        assert!(rows[1].path.ends_with("b.tmp"));
+    }
+
+    #[test]
+    fn audit_rows_handles_empty_records() {
+        assert!(audit_rows(&[], 1000, 5).is_empty());
+    }
+
+    #[test]
+    fn audit_rows_summary_reflects_outcome() {
+        let mut record = audit_record(1, 0, "a.tmp");
+        record.outcome = ItemOutcome::Failed {
+            message: "使用中".to_string(),
+        };
+        let rows = audit_rows(std::slice::from_ref(&record), 0, 5);
+        assert!(rows[0].summary.contains("失敗"));
+        assert!(rows[0].summary.contains("使用中"));
     }
 }

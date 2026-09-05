@@ -18,12 +18,13 @@
 
 use clap::{Args, Parser, Subcommand};
 use pc_cleaner_core::{
-    Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError, ItemOutcome,
-    ScanEntry, breakdown, config, execute, history, human_size, platform, preview,
-    rules_for_safeties, safety_scope, scan_pipeline, should_relaunch,
+    AuditRecord, Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError,
+    ItemOutcome, ScanEntry, audit, breakdown, config, execute, history, human_size, platform,
+    preview, rules_for_safeties, safety_scope, scan_pipeline, should_relaunch,
 };
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::time::SystemTime;
 
 #[derive(Parser)]
 #[command(name = "pc-cleaner", about = "手動選択型ディスク掃除ツール", version)]
@@ -43,6 +44,18 @@ enum Command {
     Scan(ScopeArgs),
     /// 走査して削除を実行する（既定はゴミ箱送り、F-CLI-03〜06）
     Clean(CleanArgs),
+    /// 削除ログ（監査ログ）を表示する（D1 / Issue #51）。何も削除しない
+    Log(LogArgs),
+}
+
+#[derive(Args)]
+struct LogArgs {
+    /// 表示件数の上限
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// 指定した実行（`clean` 実行時に払い出される run_id）分のみ表示する
+    #[arg(long)]
+    run: Option<u64>,
 }
 
 #[derive(Args)]
@@ -82,6 +95,7 @@ impl Command {
         match self {
             Command::Scan(args) => args.admin,
             Command::Clean(args) => args.admin,
+            Command::Log(_) => false,
         }
     }
 }
@@ -112,6 +126,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Scan(args) => run_scan(platform.as_ref(), &config, args.all),
         Command::Clean(args) => run_clean(platform.as_ref(), &config, args),
+        Command::Log(args) => run_log(platform.as_ref(), args),
     }
 }
 
@@ -212,7 +227,9 @@ fn run_clean(platform: &dyn platform::Platform, config: &Config, args: CleanArgs
     let outcome = execute(platform, final_plan);
     print_outcome(&outcome);
     if !outcome.is_dry_run() {
-        record_history(platform, &outcome);
+        let run_id = audit::next_run_id(SystemTime::now());
+        record_history(platform, &outcome, run_id);
+        record_audit(platform, config, &outcome, run_id);
     }
 
     if outcome.failed_count() > 0 {
@@ -337,13 +354,64 @@ fn print_outcome(outcome: &DeleteOutcome) {
     }
 }
 
+/// `pc-cleaner log` の実装。監査ログ（`deletion_log.jsonl`）を読んで表示する
+/// だけで、削除・復元は一切行わない（D1 / Issue #51）。
+fn run_log(platform: &dyn platform::Platform, args: LogArgs) -> ExitCode {
+    let Some(path) = audit::audit_file_path(platform) else {
+        eprintln!("この環境では削除ログの保存先を特定できません。");
+        return ExitCode::FAILURE;
+    };
+
+    let records = match audit::load(&path) {
+        Ok(records) => records,
+        Err(e) => {
+            eprintln!("削除ログの読み込みに失敗しました: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let filtered: Vec<&AuditRecord> = match args.run {
+        Some(run_id) => audit::filter_by_run(&records, run_id),
+        None => records.iter().collect(),
+    };
+
+    if filtered.is_empty() {
+        println!("記録なし。");
+        return ExitCode::SUCCESS;
+    }
+
+    let start = filtered.len().saturating_sub(args.limit);
+    for record in &filtered[start..] {
+        print_audit_record(record);
+    }
+    println!("保存先: {}", path.display());
+    ExitCode::SUCCESS
+}
+
+fn print_audit_record(record: &AuditRecord) {
+    let outcome = match &record.outcome {
+        ItemOutcome::Deleted => "削除".to_string(),
+        ItemOutcome::Failed { message } => format!("失敗（{message}）"),
+        ItemOutcome::Missing => "対象なし".to_string(),
+        ItemOutcome::NotAttempted => "未実行".to_string(),
+    };
+    println!(
+        "[run {}] {:<16} {:>10}  {:<10} {}",
+        record.run_id,
+        record.rule_id,
+        human_size(record.size),
+        outcome,
+        record.path.display(),
+    );
+}
+
 /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
 ///
 /// 履歴の記録は削除の成否そのものには影響させない。書き込みに失敗しても
 /// 警告を出すだけで、`run_clean` 全体の終了コードは変えない（F-CLI-01：
 /// CLI は薄く保ち、実行そのものを妨げない）。
-fn record_history(platform: &dyn platform::Platform, outcome: &DeleteOutcome) {
-    match history::record_outcome(platform, outcome) {
+fn record_history(platform: &dyn platform::Platform, outcome: &DeleteOutcome, run_id: u64) {
+    match history::record_outcome(platform, outcome, run_id) {
         None => {}
         Some(Err(e)) => {
             eprintln!("警告: 履歴の記録に失敗しました: {e}");
@@ -355,6 +423,26 @@ fn record_history(platform: &dyn platform::Platform, outcome: &DeleteOutcome) {
                 history.run_count()
             );
         }
+    }
+}
+
+/// 削除結果を監査ログ（`deletion_log.jsonl`）へ記録する（D1 / Issue #51）。
+///
+/// `record_history` と同じ方針：記録の成否は `run_clean` 全体の終了コードに
+/// 影響させず、失敗は警告表示に留める（F-CLI-01：CLI は実行そのものを
+/// 妨げない）。`Config::audit_log_enabled` が `false` の場合は静かに何もしない。
+fn record_audit(
+    platform: &dyn platform::Platform,
+    config: &Config,
+    outcome: &DeleteOutcome,
+    run_id: u64,
+) {
+    match audit::record_outcome(platform, config, outcome, run_id) {
+        None => {}
+        Some(Err(e)) => {
+            eprintln!("警告: 削除ログの記録に失敗しました: {e}");
+        }
+        Some(Ok(_)) => {}
     }
 }
 
@@ -395,6 +483,29 @@ mod tests {
                 assert!(!args.admin);
             }
             _ => panic!("expected Clean"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_log_subcommand_with_defaults_and_options() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "log"]).unwrap();
+        assert!(!cli.command.admin_requested());
+        match cli.command {
+            Command::Log(args) => {
+                assert_eq!(args.limit, 20);
+                assert_eq!(args.run, None);
+            }
+            _ => panic!("expected Log"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["pc-cleaner", "log", "--limit", "5", "--run", "42"]).unwrap();
+        match cli.command {
+            Command::Log(args) => {
+                assert_eq!(args.limit, 5);
+                assert_eq!(args.run, Some(42));
+            }
+            _ => panic!("expected Log"),
         }
     }
 

@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod audit;
 pub mod breakdown;
 pub mod config;
 pub mod delete;
@@ -22,6 +23,7 @@ pub mod recommend;
 pub mod rule;
 pub mod scan;
 
+pub use audit::AuditRecord;
 pub use breakdown::{BreakdownItem, BucketBreakdown, CategoryBreakdown, SizeBucket};
 pub use config::{Config, RulePref};
 pub use delete::{

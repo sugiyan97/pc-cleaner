@@ -51,6 +51,13 @@ pub struct Config {
     ///
     /// 内容ハッシュの計算を伴い走査コストが増えるため既定は `false`。
     pub detect_duplicates: bool,
+    /// 削除実行の監査ログ（`crate::audit` / Issue #51）を記録するか。
+    ///
+    /// 既定は `true`。誤削除の追跡（D1・要件定義書 R7）は、事後に有効化
+    /// しても手遅れであるため、`history.rs`（既定 ON・オプトアウト不可）と
+    /// 同様に既定 ON とする。`history.rs` と異なりパスを記録するため
+    /// （プライバシー配慮）、こちらのみユーザーが無効化できるようにする。
+    pub audit_log_enabled: bool,
 }
 
 /// 既定の大容量ファイルしきい値（1 GiB）。
@@ -65,6 +72,7 @@ impl Default for Config {
             age_thresholds: std::collections::HashMap::new(),
             large_file_threshold_bytes: DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
             detect_duplicates: false,
+            audit_log_enabled: true,
         }
     }
 }
@@ -141,6 +149,10 @@ mod tests {
             "既定値は1 GiB"
         );
         assert!(!config.detect_duplicates, "走査コストのため既定は false");
+        assert!(
+            config.audit_log_enabled,
+            "誤削除の追跡は事後の有効化では手遅れのため既定 true"
+        );
     }
 
     #[test]
@@ -205,6 +217,24 @@ mod tests {
         assert!(config.age_thresholds.is_empty());
         assert!(config.use_trash);
         assert!(config.dry_run_default);
+    }
+
+    #[test]
+    fn load_accepts_config_written_before_audit_log_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // audit_log_enabled が存在しなかった頃の config.json を模す。
+        fs::write(
+            &path,
+            r#"{"rule_prefs":{},"use_trash":true,"dry_run_default":true}"#,
+        )
+        .unwrap();
+
+        let config = load(&path);
+        assert!(
+            config.audit_log_enabled,
+            "コンテナ属性 #[serde(default)] により既定 true で補われる"
+        );
     }
 
     #[test]

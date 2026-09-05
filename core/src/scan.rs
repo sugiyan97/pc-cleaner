@@ -100,14 +100,16 @@ pub enum ScanProgress {
 /// が `true`（A2 の昇格を経て管理者権限が与えられている）でない限り除外する
 /// （F-SCAN-04 / A1 / Issue #40）。
 ///
-/// フロー①（ワンクリック掃除）は `rules_for_safeties(&[Safety::Safe], elevated)`、
+/// フロー①（ワンクリック掃除）は
+/// `rules_for_safeties(&[Safety::Safe], config, elevated)`、
 /// フロー②（手動レビュー）は
-/// `rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review], elevated)`
+/// `rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review], config, elevated)`
 /// と呼ぶことで、F-SCAN-06 / F-SCAN-07 を CLI/GUI 共通の同一 API で表現する。
 /// `elevated` には呼び出し側が `Platform::is_elevated()` の結果をそのまま
-/// 渡すこと（中間変数でのフラグ捏造を避ける）。
-pub fn rules_for_safeties(safeties: &[Safety], elevated: bool) -> Vec<Rule> {
-    crate::rule::scannable_rules(elevated)
+/// 渡すこと（中間変数でのフラグ捏造を避ける）。`config` はルール毎の経過日数
+/// しきい値の上書きに使う（NF-EXT-03 / C1 / Issue #47）。
+pub fn rules_for_safeties(safeties: &[Safety], config: &Config, elevated: bool) -> Vec<Rule> {
+    crate::rule::scannable_rules(config, elevated)
         .into_iter()
         .filter(|r| safeties.contains(&r.safety))
         .collect()
@@ -240,7 +242,7 @@ struct ScanTarget<'a> {
 
 /// `rule` を走査対象にできるか判定し、できるなら基点を解決する。
 ///
-/// 呼び出し側は通常 [`rules_for_safeties`]（内部で `scannable_rules()` を
+/// 呼び出し側は通常 [`rules_for_safeties`]（内部で `scannable_rules(config, ..)` を
 /// 使う）で昇格状態に応じたルールしか渡さないが、誤って渡された場合の
 /// 二次防御としてここでも再チェックする（`recommend()` が同様の再判定を
 /// 行っているのに倣う）。判定は [`Rule::is_permitted`] /
@@ -668,22 +670,28 @@ mod tests {
 
     #[test]
     fn rules_for_safeties_excludes_needs_admin_and_filters_by_safety() {
-        let safe_only = rules_for_safeties(&[Safety::Safe], false);
+        let config = Config::default();
+        let safe_only = rules_for_safeties(&[Safety::Safe], &config, false);
         assert!(safe_only.iter().all(|r| r.safety == Safety::Safe));
         assert!(safe_only.iter().all(|r| !r.needs_admin));
         assert!(!safe_only.is_empty());
 
-        let all = rules_for_safeties(&[Safety::Safe, Safety::Caution, Safety::Review], false);
+        let all = rules_for_safeties(
+            &[Safety::Safe, Safety::Caution, Safety::Review],
+            &config,
+            false,
+        );
         assert!(all.iter().all(|r| !r.needs_admin));
         assert!(all.iter().any(|r| r.id == "old_downloads"));
     }
 
     #[test]
     fn rules_for_safeties_includes_needs_admin_when_elevated() {
-        let not_elevated = rules_for_safeties(&[Safety::Review], false);
+        let config = Config::default();
+        let not_elevated = rules_for_safeties(&[Safety::Review], &config, false);
         assert!(!not_elevated.iter().any(|r| r.id == "system_temp"));
 
-        let elevated = rules_for_safeties(&[Safety::Review], true);
+        let elevated = rules_for_safeties(&[Safety::Review], &config, true);
         assert!(elevated.iter().any(|r| r.id == "system_temp"));
     }
 
@@ -788,6 +796,37 @@ mod tests {
         assert_eq!(entries.len(), 1, "しきい値未満は走査結果に含めない");
         assert_eq!(entries[0].path, dir.path().join("old.bin"));
         assert!(!entries[0].recommended, "Review は経過日数によらず既定OFF");
+    }
+
+    #[test]
+    fn older_than_uses_the_configured_threshold() {
+        // resolve_target/walk_target 自体は Rule.age_threshold_days しか
+        // 読まないが、その値を「Config から解決した値」にすり替えることで
+        // rules_for_safeties -> scannable_rules -> builtin_rules 経由の
+        // 設定反映が scan-time のフィルタまで実際に効くことを検証する
+        // （old_downloads は scan.rs 側で絞り込む唯一のルール）。
+        let dir = tempfile::tempdir().unwrap();
+        write_file_with_age(&dir.path().join("old.bin"), b"x", 40);
+        write_file_with_age(&dir.path().join("new.bin"), b"x", 20);
+
+        let mut config = Config::default();
+        config
+            .age_thresholds
+            .insert("old_downloads".to_string(), 30);
+
+        let rules = crate::rule::scannable_rules(&config, false);
+        let rule = rules.into_iter().find(|r| r.id == "old_downloads").unwrap();
+        assert_eq!(rule.age_threshold_days, Some(30));
+
+        let platform = FakePlatform::new().with(KnownDir::Downloads, dir.path().to_path_buf());
+        let entries = scan(&platform, std::slice::from_ref(&rule));
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "設定した30日しきい値未満の new.bin は候補に含めない"
+        );
+        assert_eq!(entries[0].path, dir.path().join("old.bin"));
     }
 
     #[test]

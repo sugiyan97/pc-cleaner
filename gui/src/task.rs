@@ -61,7 +61,7 @@ pub fn spawn_scan(
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let platform = make_platform(demo);
-        let rules = rules_for_safeties(&scope.safeties(), platform.is_elevated());
+        let rules = rules_for_safeties(&scope.safeties(), &config, platform.is_elevated());
         let progress_tx = tx.clone();
         let progress_ctx = ctx.clone();
         let entries =

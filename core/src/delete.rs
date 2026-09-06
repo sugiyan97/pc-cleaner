@@ -96,7 +96,10 @@ pub enum DeleteMethod {
 }
 
 /// ドライランになった理由。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` はエクスポート機能（`export.rs` / Issue #52）の交換形式の
+/// 一部（出力専用のため `Deserialize` は持たせない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DryRunReason {
     /// `Config::dry_run_default` が `true` だった。
     ConfigDefault,
@@ -219,7 +222,10 @@ pub struct PlannedDeletion {
 }
 
 /// プレビュー段で計画から除外された理由。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` はエクスポート機能（`export.rs` / Issue #52）の交換形式の
+/// 一部（出力専用のため `Deserialize` は持たせない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ExclusionReason {
     /// `ScanEntry::selected` が `false`（F-DEL-03）。
     NotSelected,

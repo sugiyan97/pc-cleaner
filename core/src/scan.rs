@@ -11,6 +11,7 @@
 
 use crate::config::{Config, RulePref};
 use crate::entry::ScanEntry;
+use crate::i18n::Lang;
 use crate::inspect;
 use crate::platform::Platform;
 use crate::recommend::recommend;
@@ -159,8 +160,10 @@ pub fn apply_rule_prefs(entries: &mut [ScanEntry], config: &Config) {
 }
 
 /// `rules` を走査して `ScanEntry` を返す。進捗通知は行わない。
-pub fn scan(platform: &dyn Platform, rules: &[Rule]) -> Vec<ScanEntry> {
-    scan_with_progress(platform, rules, &mut |_| {})
+///
+/// `lang` は `recommend()` が生成する `reason` の表示言語（E4 / Issue #58）。
+pub fn scan(platform: &dyn Platform, rules: &[Rule], lang: Lang) -> Vec<ScanEntry> {
+    scan_with_progress(platform, rules, lang, &mut |_| {})
 }
 
 /// [`scan`] してから、重複ファイル検出（`Config::detect_duplicates` が
@@ -175,10 +178,10 @@ pub fn scan(platform: &dyn Platform, rules: &[Rule]) -> Vec<ScanEntry> {
 /// （C2 / Issue #48）を反映させる。`recommend` は純粋関数であり同じ入力から
 /// 同じ出力を返すため、2度目の呼び出しで以前の注意書きが重複することはない。
 pub fn scan_pipeline(platform: &dyn Platform, rules: &[Rule], config: &Config) -> Vec<ScanEntry> {
-    let mut entries = scan(platform, rules);
+    let mut entries = scan(platform, rules, config.lang);
     if config.detect_duplicates {
         inspect::annotate_duplicates(&mut entries);
-        apply_recommendations(&mut entries, rules);
+        apply_recommendations(&mut entries, rules, config.lang);
     }
     apply_rule_prefs(&mut entries, config);
     entries
@@ -191,12 +194,12 @@ pub fn scan_pipeline_with_progress(
     config: &Config,
     mut on_progress: impl FnMut(ScanProgress),
 ) -> Vec<ScanEntry> {
-    let mut entries = scan_with_progress(platform, rules, &mut on_progress);
+    let mut entries = scan_with_progress(platform, rules, config.lang, &mut on_progress);
     if config.detect_duplicates {
         let total = entries.len();
         on_progress(ScanProgress::Inspecting { done: 0, total });
         inspect::annotate_duplicates(&mut entries);
-        apply_recommendations(&mut entries, rules);
+        apply_recommendations(&mut entries, rules, config.lang);
         on_progress(ScanProgress::Inspecting { done: total, total });
     }
     apply_rule_prefs(&mut entries, config);
@@ -214,9 +217,12 @@ pub fn scan_pipeline_with_progress(
 /// が本関数から戻ったあとも同じコールバックで
 /// [`ScanProgress::Inspecting`] を通知できるようにするため（値渡しだと
 /// 本関数の呼び出しでムーブされてしまい、以後使えなくなる）。
+///
+/// `lang` は `recommend()` が生成する `reason` の表示言語（E4 / Issue #58）。
 pub fn scan_with_progress(
     platform: &dyn Platform,
     rules: &[Rule],
+    lang: Lang,
     on_progress: &mut dyn FnMut(ScanProgress),
 ) -> Vec<ScanEntry> {
     let now = SystemTime::now();
@@ -265,7 +271,7 @@ pub fn scan_with_progress(
     // 使用中判定（C2 / Issue #48）は I/O を伴うため、`recommend()` を純粋関数
     // のまま保つべく、ここ（recommend() 呼び出しの直前）で行う。
     inspect::annotate_in_use(platform, &mut entries);
-    apply_recommendations(&mut entries, rules);
+    apply_recommendations(&mut entries, rules, lang);
 
     on_progress(ScanProgress::Finished {
         entries: entries.len(),
@@ -284,10 +290,10 @@ pub fn scan_with_progress(
 /// `recommend` は純粋関数のため複数回呼んでも安全であり、
 /// [`scan_pipeline`] / [`scan_pipeline_with_progress`] は重複ファイル検出
 /// （C2 / Issue #48）の後にもう一度呼び出す。
-fn apply_recommendations(entries: &mut [ScanEntry], rules: &[Rule]) {
+fn apply_recommendations(entries: &mut [ScanEntry], rules: &[Rule], lang: Lang) {
     for entry in entries {
         if let Some(rule) = rules.iter().find(|r| r.id == entry.rule_id) {
-            let recommendation = recommend(entry, rule);
+            let recommendation = recommend(entry, rule, lang);
             entry.recommended = recommendation.recommended;
             entry.selected = recommendation.recommended;
             entry.reason = recommendation.reason;
@@ -794,7 +800,7 @@ mod tests {
             None,
         );
 
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
 
         // "empty" はファイル数0のため候補に含まれない。
         assert_eq!(entries.len(), 2);
@@ -829,7 +835,7 @@ mod tests {
             Some(180),
         );
 
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
 
         assert_eq!(entries.len(), 1, "F-SCAN-08: 合致しないファイルを含めない");
         assert_eq!(entries[0].path, dir.path().join("deep/x.log"));
@@ -853,7 +859,7 @@ mod tests {
             Some(90),
         );
 
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
 
         assert_eq!(entries.len(), 1, "しきい値未満は走査結果に含めない");
         assert_eq!(entries[0].path, dir.path().join("old.bin"));
@@ -881,7 +887,7 @@ mod tests {
         assert_eq!(rule.age_threshold_days, Some(30));
 
         let platform = FakePlatform::new().with(KnownDir::Downloads, dir.path().to_path_buf());
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
 
         assert_eq!(
             entries.len(),
@@ -905,7 +911,7 @@ mod tests {
             None,
         );
 
-        assert!(scan(&platform, std::slice::from_ref(&rule)).is_empty());
+        assert!(scan(&platform, std::slice::from_ref(&rule), Lang::Ja).is_empty());
     }
 
     #[test]
@@ -924,7 +930,7 @@ mod tests {
             None,
         );
 
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
         assert_eq!(
             entries.len(),
             1,
@@ -958,7 +964,7 @@ mod tests {
         );
 
         assert!(
-            scan(&platform, std::slice::from_ref(&rule)).is_empty(),
+            scan(&platform, std::slice::from_ref(&rule), Lang::Ja).is_empty(),
             "昇格していても needs_admin でないルールは管理者領域を対象にしない"
         );
     }
@@ -974,7 +980,7 @@ mod tests {
             false,
             None,
         );
-        assert!(scan(&platform, std::slice::from_ref(&rule)).is_empty());
+        assert!(scan(&platform, std::slice::from_ref(&rule), Lang::Ja).is_empty());
     }
 
     #[test]
@@ -990,7 +996,7 @@ mod tests {
             false,
             None,
         );
-        assert!(scan(&platform, std::slice::from_ref(&rule)).is_empty());
+        assert!(scan(&platform, std::slice::from_ref(&rule), Lang::Ja).is_empty());
     }
 
     #[test]
@@ -1007,7 +1013,7 @@ mod tests {
             None,
         );
         assert!(
-            scan(&platform, std::slice::from_ref(&rule)).is_empty(),
+            scan(&platform, std::slice::from_ref(&rule), Lang::Ja).is_empty(),
             "しきい値未設定の OlderThan ルールは全件拾わず丸ごとスキップする"
         );
     }
@@ -1027,7 +1033,7 @@ mod tests {
             Some(180),
         );
 
-        let entries = scan(&platform, std::slice::from_ref(&rule));
+        let entries = scan(&platform, std::slice::from_ref(&rule), Lang::Ja);
         assert_eq!(entries.len(), 2);
         for entry in &entries {
             assert!(entry.path.starts_with(dir.path()), "F-SCAN-08");
@@ -1064,7 +1070,8 @@ mod tests {
         ];
 
         let mut events = Vec::new();
-        let entries = scan_with_progress(&platform, &rules, &mut |event| events.push(event));
+        let entries =
+            scan_with_progress(&platform, &rules, Lang::Ja, &mut |event| events.push(event));
 
         assert_eq!(entries.len(), 2);
         assert_eq!(
@@ -1116,7 +1123,7 @@ mod tests {
         ];
 
         let mut events = Vec::new();
-        scan_with_progress(&platform, &rules, &mut |event| events.push(event));
+        scan_with_progress(&platform, &rules, Lang::Ja, &mut |event| events.push(event));
 
         assert!(events.iter().any(|e| matches!(
             e,

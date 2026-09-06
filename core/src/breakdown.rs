@@ -7,6 +7,7 @@
 
 use crate::delete::DeletePlan;
 use crate::entry::ScanEntry;
+use crate::i18n::Lang;
 use serde::Serialize;
 
 /// 内訳集計の入力単位。`ScanEntry` / `PlannedDeletion` のどちらからも
@@ -58,14 +59,19 @@ const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
 impl SizeBucket {
-    /// 表示用の日本語ラベル。
-    pub fn label(&self) -> &'static str {
-        match self {
-            SizeBucket::UnderMib => "1MB未満",
-            SizeBucket::Mib1To10 => "1MB〜10MB",
-            SizeBucket::Mib10To100 => "10MB〜100MB",
-            SizeBucket::Mib100ToGib => "100MB〜1GB",
-            SizeBucket::OverGib => "1GB以上",
+    /// 表示用ラベル（E4 / Issue #58: `lang` により日本語 / 英語を切り替える）。
+    pub fn label(&self, lang: Lang) -> &'static str {
+        match (self, lang) {
+            (SizeBucket::UnderMib, Lang::Ja) => "1MB未満",
+            (SizeBucket::Mib1To10, Lang::Ja) => "1MB〜10MB",
+            (SizeBucket::Mib10To100, Lang::Ja) => "10MB〜100MB",
+            (SizeBucket::Mib100ToGib, Lang::Ja) => "100MB〜1GB",
+            (SizeBucket::OverGib, Lang::Ja) => "1GB以上",
+            (SizeBucket::UnderMib, Lang::En) => "Under 1MB",
+            (SizeBucket::Mib1To10, Lang::En) => "1MB - 10MB",
+            (SizeBucket::Mib10To100, Lang::En) => "10MB - 100MB",
+            (SizeBucket::Mib100ToGib, Lang::En) => "100MB - 1GB",
+            (SizeBucket::OverGib, Lang::En) => "1GB or more",
         }
     }
 

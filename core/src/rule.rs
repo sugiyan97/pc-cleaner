@@ -1,6 +1,7 @@
 //! 掃除ルール（許可リストの1項目）。判定支援の一次情報。
 
 use crate::config::Config;
+use crate::i18n::Lang;
 use crate::platform::KnownDir;
 use serde::Serialize;
 
@@ -142,11 +143,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
     vec![
         Rule {
             id: "user_temp".to_string(),
-            label: "ユーザー一時ファイル".to_string(),
-            description: "アプリが処理の途中経過を書き出す一時ファイルの置き場です。\
-                必要になれば自動的に作り直されるため、削除しても設定やデータは失われません。\
-                本日更新されたものなど使用中の可能性があるものは、自動的に推奨から外します。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "ユーザー一時ファイル",
+                Lang::En => "User temporary files",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "アプリが処理の途中経過を書き出す一時ファイルの置き場です。\
+                    必要になれば自動的に作り直されるため、削除しても設定やデータは失われません。\
+                    本日更新されたものなど使用中の可能性があるものは、自動的に推奨から外します。"
+                }
+                Lang::En => {
+                    "Where apps write temporary files for work in progress. \
+                    They are recreated automatically when needed, so deleting them does not \
+                    lose your settings or data. Files that may be in use, such as those \
+                    updated today, are automatically excluded from the recommendation."
+                }
+            }
+            .to_string(),
             base: KnownDir::UserTemp,
             match_kind: MatchKind::All,
             needs_admin: false,
@@ -157,12 +172,27 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "browser_cache".to_string(),
-            label: "ブラウザ / アプリのキャッシュ".to_string(),
-            description: "Web ページの画像やスクリプトなどを、次回アクセス時に再ダウンロード\
-                せずに済ませるための一時保存領域です。削除してもブックマーク・保存済み\
-                パスワード・閲覧履歴・ログイン状態は消えません。次にアクセスしたときに\
-                自動的に作り直され、その分だけ表示が少し遅くなります。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "ブラウザ / アプリのキャッシュ",
+                Lang::En => "Browser / app cache",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "Web ページの画像やスクリプトなどを、次回アクセス時に再ダウンロード\
+                    せずに済ませるための一時保存領域です。削除してもブックマーク・保存済み\
+                    パスワード・閲覧履歴・ログイン状態は消えません。次にアクセスしたときに\
+                    自動的に作り直され、その分だけ表示が少し遅くなります。"
+                }
+                Lang::En => {
+                    "A temporary storage area so web page images and scripts don't \
+                    need to be redownloaded next time. Deleting it does not remove \
+                    bookmarks, saved passwords, browsing history, or login state. It is \
+                    recreated automatically on next access, which may make pages load a \
+                    little slower for a while."
+                }
+            }
+            .to_string(),
             base: KnownDir::Cache,
             match_kind: MatchKind::All,
             needs_admin: false,
@@ -173,11 +203,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "thumbnail_cache".to_string(),
-            label: "サムネイルキャッシュ".to_string(),
-            description: "エクスプローラーでフォルダを開いたときに、画像や動画の縮小版を\
-                すばやく表示するためのキャッシュです。削除しても元の画像・動画そのものは\
-                消えません。次に同じフォルダを開いたときに自動的に作り直されます。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "サムネイルキャッシュ",
+                Lang::En => "Thumbnail cache",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "エクスプローラーでフォルダを開いたときに、画像や動画の縮小版を\
+                    すばやく表示するためのキャッシュです。削除しても元の画像・動画そのものは\
+                    消えません。次に同じフォルダを開いたときに自動的に作り直されます。"
+                }
+                Lang::En => {
+                    "A cache used to quickly show thumbnail previews of images and \
+                    videos when you open a folder in Explorer. Deleting it does not remove \
+                    the original images or videos. It is recreated automatically the next \
+                    time you open the same folder."
+                }
+            }
+            .to_string(),
             // 実体は %LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db
             // のみ。LocalAppData 全体を基点にすると無関係な .db ファイルを
             // 巻き込むため、専用の基点 ThumbnailCache に絞っている（Issue #16）。
@@ -193,11 +237,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "recycle_bin".to_string(),
-            label: "ゴミ箱".to_string(),
-            description: "すでにゴミ箱へ移動済みのファイルです。ここで削除すると完全に消え、\
-                復元できなくなります。見覚えのないファイルが含まれていないか、実行前に\
-                一度ゴミ箱の中身を確認してください。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "ゴミ箱",
+                Lang::En => "Recycle Bin",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "すでにゴミ箱へ移動済みのファイルです。ここで削除すると完全に消え、\
+                    復元できなくなります。見覚えのないファイルが含まれていないか、実行前に\
+                    一度ゴミ箱の中身を確認してください。"
+                }
+                Lang::En => {
+                    "Files already moved to the Recycle Bin. Deleting them here \
+                    removes them permanently and they cannot be restored. Please check the \
+                    contents of the Recycle Bin before proceeding, in case it contains \
+                    something you don't recognize."
+                }
+            }
+            .to_string(),
             base: KnownDir::RecycleBin,
             match_kind: MatchKind::All,
             needs_admin: false,
@@ -215,13 +273,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "old_logs".to_string(),
-            label: format!("古いログ（{old_log_threshold_days}日超）"),
-            description: format!(
-                "アプリが動作記録として書き出したログファイルです。最終更新から\
-                {old_log_threshold_days}日以上経過したものを推奨対象としています。\
-                過去の不具合を調査する予定がなければ削除して問題ありません。\
-                現在調査中の不具合がある場合は残してください。"
-            ),
+            label: match config.lang {
+                Lang::Ja => format!("古いログ（{old_log_threshold_days}日超）"),
+                Lang::En => format!("Old logs (older than {old_log_threshold_days} days)"),
+            },
+            description: match config.lang {
+                Lang::Ja => format!(
+                    "アプリが動作記録として書き出したログファイルです。最終更新から\
+                    {old_log_threshold_days}日以上経過したものを推奨対象としています。\
+                    過去の不具合を調査する予定がなければ削除して問題ありません。\
+                    現在調査中の不具合がある場合は残してください。"
+                ),
+                Lang::En => format!(
+                    "Log files apps write as an operational record. Files last modified \
+                    more than {old_log_threshold_days} days ago are recommended for \
+                    deletion. It's fine to delete them if you have no plans to \
+                    investigate past issues. Keep them if you're currently investigating \
+                    an issue."
+                ),
+            },
             base: KnownDir::LocalAppData,
             match_kind: MatchKind::Extension(vec!["log".to_string()]),
             needs_admin: false,
@@ -232,12 +302,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "old_downloads".to_string(),
-            label: format!("古いダウンロード（{old_download_threshold_days}日超）"),
-            description: format!(
-                "ダウンロードフォルダにあり、最終更新から{old_download_threshold_days}日以上\
-                経過したファイルです。インストーラや資料など、本人にしか要否を判断できない\
-                ものが含まれます。既定では選択しません。削除する前に必ず中身を確認してください。"
-            ),
+            label: match config.lang {
+                Lang::Ja => format!("古いダウンロード（{old_download_threshold_days}日超）"),
+                Lang::En => {
+                    format!("Old downloads (older than {old_download_threshold_days} days)")
+                }
+            },
+            description: match config.lang {
+                Lang::Ja => format!(
+                    "ダウンロードフォルダにあり、最終更新から{old_download_threshold_days}日以上\
+                    経過したファイルです。インストーラや資料など、本人にしか要否を判断できない\
+                    ものが含まれます。既定では選択しません。削除する前に必ず中身を確認してください。"
+                ),
+                Lang::En => format!(
+                    "Files in the Downloads folder last modified more than \
+                    {old_download_threshold_days} days ago. These may include installers \
+                    or documents that only you can judge whether you still need. Not \
+                    selected by default. Please review the contents before deleting."
+                ),
+            },
             base: KnownDir::Downloads,
             match_kind: MatchKind::OlderThan,
             needs_admin: false,
@@ -248,11 +331,25 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "system_temp".to_string(),
-            label: "システム一時ファイル".to_string(),
-            description: "OS とシステムサービスが使う一時ファイルの置き場です。削除には\
-                管理者権限が必要なため、管理者として実行し直した場合のみ対象になります。\
-                使用中のファイルは削除できず、失敗として報告されます。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "システム一時ファイル",
+                Lang::En => "System temporary files",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "OS とシステムサービスが使う一時ファイルの置き場です。削除には\
+                    管理者権限が必要なため、管理者として実行し直した場合のみ対象になります。\
+                    使用中のファイルは削除できず、失敗として報告されます。"
+                }
+                Lang::En => {
+                    "Where the OS and system services keep temporary files. \
+                    Deleting them requires administrator privileges, so they are only \
+                    included when you restart the app as administrator. Files in use \
+                    cannot be deleted and will be reported as failures."
+                }
+            }
+            .to_string(),
             base: KnownDir::SystemTemp,
             match_kind: MatchKind::All,
             needs_admin: true,
@@ -271,13 +368,29 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "windows_update_cache".to_string(),
-            label: "Windows Update のダウンロード済みファイル".to_string(),
-            description: "Windows Update が更新プログラムを適用するためにダウンロードした\
-                ファイルの置き場です。適用済みの更新については残しておく必要がなく、\
-                必要になれば自動的に再ダウンロードされます。削除には管理者権限が必要です。\
-                更新の適用中やダウンロード中のファイルは使用中のため削除できず、\
-                失敗として報告されます。その場合は再起動後にもう一度お試しください。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "Windows Update のダウンロード済みファイル",
+                Lang::En => "Windows Update downloaded files",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "Windows Update が更新プログラムを適用するためにダウンロードした\
+                    ファイルの置き場です。適用済みの更新については残しておく必要がなく、\
+                    必要になれば自動的に再ダウンロードされます。削除には管理者権限が必要です。\
+                    更新の適用中やダウンロード中のファイルは使用中のため削除できず、\
+                    失敗として報告されます。その場合は再起動後にもう一度お試しください。"
+                }
+                Lang::En => {
+                    "Where Windows Update stores files it downloaded to apply \
+                    updates. There is no need to keep files for updates already applied; \
+                    they will be redownloaded automatically if needed. Deleting them \
+                    requires administrator privileges. Files currently being applied or \
+                    downloaded are in use and cannot be deleted, and will be reported as \
+                    failures — if that happens, try again after restarting."
+                }
+            }
+            .to_string(),
             // 基点は SoftwareDistribution 全体ではなく Download サブフォルダに
             // 限定する。同階層の DataStore は更新履歴データベースであり、
             // 削除すると更新履歴が壊れるため対象にしてはならない（A3 /
@@ -302,12 +415,26 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
         },
         Rule {
             id: "delivery_optimization_cache".to_string(),
-            label: "配信の最適化ファイル".to_string(),
-            description: "Windows Update やストアアプリの更新を、同じネットワーク上の\
-                他の PC と共有するために保存されているファイルです。削除しても、\
-                既に適用済みの更新には影響しません。必要になれば自動的に作り直されます。\
-                削除には管理者権限が必要です。"
-                .to_string(),
+            label: match config.lang {
+                Lang::Ja => "配信の最適化ファイル",
+                Lang::En => "Delivery Optimization files",
+            }
+            .to_string(),
+            description: match config.lang {
+                Lang::Ja => {
+                    "Windows Update やストアアプリの更新を、同じネットワーク上の\
+                    他の PC と共有するために保存されているファイルです。削除しても、\
+                    既に適用済みの更新には影響しません。必要になれば自動的に作り直されます。\
+                    削除には管理者権限が必要です。"
+                }
+                Lang::En => {
+                    "Files kept so Windows Update and Store app updates can be \
+                    shared with other PCs on the same network. Deleting them does not \
+                    affect updates already applied. They are recreated automatically when \
+                    needed. Deleting them requires administrator privileges."
+                }
+            }
+            .to_string(),
             // 実パスは NetworkService サービスアカウントのローカルプロファイル
             // 配下にある（KnownDir::DeliveryOptimizationCache の doc コメント
             // 参照）。グループポリシー DOModifyCacheDrive でキャッシュの保存先を
@@ -580,5 +707,31 @@ mod tests {
             let rule = rules.iter().find(|r| r.id == id).unwrap();
             assert_eq!(rule.large_file_threshold_bytes, Some(12_345), "id={id}");
         }
+    }
+
+    #[test]
+    fn en_lang_translates_labels_and_descriptions_but_keeps_ids() {
+        // F-I18N-01 / Issue #58: 言語を切り替えても id 集合・順序は変わらず、
+        // label / description だけが文言として変わること。
+        let ja_rules = builtin_rules(&Config::default());
+        let en_config = Config {
+            lang: Lang::En,
+            ..Config::default()
+        };
+        let en_rules = builtin_rules(&en_config);
+
+        let ja_ids: Vec<&str> = ja_rules.iter().map(|r| r.id.as_str()).collect();
+        let en_ids: Vec<&str> = en_rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ja_ids, en_ids, "id の集合・順序は言語に依存しない");
+
+        let ja_user_temp = ja_rules.iter().find(|r| r.id == "user_temp").unwrap();
+        let en_user_temp = en_rules.iter().find(|r| r.id == "user_temp").unwrap();
+        assert_ne!(ja_user_temp.label, en_user_temp.label);
+        assert_ne!(ja_user_temp.description, en_user_temp.description);
+        assert!(en_user_temp.label.is_ascii(), "英語ラベルは ASCII のはず");
+        assert!(
+            en_user_temp.description.is_ascii(),
+            "英語の説明文は ASCII のはず"
+        );
     }
 }

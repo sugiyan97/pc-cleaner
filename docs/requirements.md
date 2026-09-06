@@ -332,6 +332,21 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 - Windows 実装は `schtasks.exe` を `std::process::Command` で呼び出す方式を採る（`windows` クレートの COM API は使わない。`#![deny(unsafe_code)]` 方針と、`/SC` 等の引数がロケールに関わらず解釈される安定性を優先するため）。引数の組み立て（`build_create_args` 等）は `quote_arg` / `join_args`（A2 / Issue #41）と同じく純粋関数とし、macOS 上でも単体テストできる形にする。
 - 頻度が `Weekly` の場合、曜日は日曜日固定とする（選択式にする拡張は将来対応とする）。
 
+### 5.14 多言語対応（E4）
+
+将来対応 E4（Issue #58）で追加。GUI の表示言語を日本語・英語で切り替えられるようにする。対象は GUI のみであり、CLI の出力（`cli/src/main.rs` の `println!`/`eprintln!`）は本対応の対象外として日本語のまま据え置く。
+
+| ID | 要件 |
+|----|------|
+| F-I18N-01 | `Config` に表示言語 `lang: Lang`（`Ja` / `En`）を持つこと。既定値は `Ja` とすること |
+| F-I18N-02 | GUI（サイドバー）から `lang` を切り替えられること |
+| F-I18N-03 | `lang` を切り替えると、ルール一覧（`rule::builtin_rules`）の表示文言・推奨理由（`recommend::recommend`）・GUI 全体（`gui/src/view.rs` / `gui/src/app.rs`）の表示言語が反映されること。ルール一覧・推奨理由は `Config` を経由してのみ言語が決まるため、反映には再走査を要すること |
+| F-I18N-04 | 本機能は GUI 専用（依存: GUI）とし、CLI には言語切り替えの手段（フラグ等）を設けないこと |
+| F-I18N-05 | `lang` は設定ファイル（`config.json` の `lang` フィールド）へ永続化すること。既存の `config.json`（`lang` フィールドが存在しない）を読み込んだ場合は `Lang::Ja` にフォールバックし、読み込みを壊さないこと（F-CFG-05 と同じ後方互換方針） |
+
+- 実装は中央集権的な翻訳テーブルを持たず、文言を生成する関数（`rule::builtin_rules` / `recommend::recommend` / `format::relative_days` / `gui/src/view.rs` の各表示ヘルパー、および `gui/src/app.rs` の呼び出し箇所）がそれぞれ `Lang` を受け取り内部で `match` する方式を採る。文言とそれを生成するロジックを同じ場所に置くことで、片方を直しても他方が古いまま残る事故を防ぐ（`core/src/i18n.rs` の doc コメント参照）。
+- `ItemOutcome::Failed { message }`（`core` 由来。OS エラー文言等）のような、core が生成し GUI がそのまま表示するエラー文言そのものは翻訳の対象外とする（対象は GUI 側で用意する文言のみ）。
+
 ---
 
 ## 6. 非機能要件
@@ -494,7 +509,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | E1 | GUI（egui）本実装 | チェックボックス一覧・容量表示・設定保存 | core 完成 | 高（対応済み。5.6 F-GUI-01〜08。Issue #11／Issue #55） |
 | E2 | 定期実行 / スケジューラ連携 | タスクスケジューラ登録、Safe のみ自動掃除 | CLI | 中（対応済み。5.13 F-SCHED-01〜05。Issue #56） |
 | E3 | 単一バイナリ配布 | リリースビルド、署名、インストーラ不要の配布 | — | 中 |
-| E4 | 多言語対応 | 日本語/英語のUI切り替え | GUI | 低 |
+| E4 | 多言語対応 | 日本語/英語のUI切り替え | GUI | 低（対応済み。5.14 F-I18N-01〜05。Issue #58） |
 
 ### 8.6 着手順の目安
 

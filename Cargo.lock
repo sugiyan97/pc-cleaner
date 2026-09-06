@@ -2309,7 +2309,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pc-cleaner-cli"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "clap",
  "pc-cleaner-core",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "pc-cleaner-core"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "pc-cleaner-gui"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",

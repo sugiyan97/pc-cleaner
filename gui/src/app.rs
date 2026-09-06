@@ -598,236 +598,244 @@ impl App {
         egui::SidePanel::left("rules").frame(frame).show(ctx, |ui| {
             let lang = self.config.lang;
 
-            // 表示言語の切り替え（E4 / Issue #58）。ルール一覧の label/description
-            // は builtin_rules(config) が生成するため、切り替え後は再走査して
-            // 反映する。
-            let mut lang_changed = false;
-            egui::ComboBox::from_id_salt("lang_select")
-                .selected_text(match self.config.lang {
-                    Lang::Ja => "日本語",
-                    Lang::En => "English",
-                })
-                .show_ui(ui, |ui| {
-                    for candidate in [Lang::Ja, Lang::En] {
-                        if ui
-                            .selectable_value(
-                                &mut self.config.lang,
-                                candidate,
-                                match candidate {
-                                    Lang::Ja => "日本語",
-                                    Lang::En => "English",
-                                },
-                            )
-                            .changed()
-                        {
-                            lang_changed = true;
-                        }
-                    }
-                });
-            if lang_changed {
-                self.save_config();
-                self.start_scan(ctx);
-            }
-            ui.separator();
-
-            ui.heading(match lang {
-                Lang::Ja => "ルール別の既定",
-                Lang::En => "Rule defaults",
-            });
-            ui.label(match lang {
-                Lang::Ja => "常に選択 / 除外 / 毎回確認(推奨に従う)を設定できます。",
-                Lang::En => {
-                    "You can set Always select / Always exclude / Ask each time \
-                    (follows the recommendation) per rule."
-                }
-            });
-            ui.separator();
-
-            let mut changed_rule: Option<String> = None;
-            let mut changed_threshold_rule_id: Option<String> = None;
-            // `.show()` に渡すクロージャ内で `&mut self.config` を書き換えつつ
-            // `self.config` を読んで作った `Vec<Rule>` を同時に借用すると
-            // 競合するため、先にルール一覧をローカル変数へ取り出しておく
-            // （app.rs 内の他の `.show()` 呼び出しと同じパターン）。
-            //
-            // `self.rules`（現在の scope に絞り込み済み）ではなく
-            // `self.all_rules`（`RuleSet::all()`。rules.json の上書き・追加
-            // ルールを含む）を基点にする。Safe のみ走査中でも Caution /
-            // Review ルールの既定やユーザー定義ルールを設定できるようにし、
-            // かつラベルが rules.json の上書きに追随するようにするため
-            // （追随漏れ修正 / Issue #55）。
-            let scannable_rules: Vec<Rule> = self
-                .all_rules
-                .iter()
-                .filter(|r| r.is_permitted(self.elevated))
-                .cloned()
-                .collect();
-            for rule in &scannable_rules {
-                ui.label(&rule.label).on_hover_text(&rule.description);
-                let mut pref = self
-                    .config
-                    .rule_prefs
-                    .get(&rule.id)
-                    .copied()
-                    .unwrap_or_default();
-                egui::ComboBox::from_id_salt(&rule.id)
-                    .selected_text(pref_label(pref, lang))
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // 表示言語の切り替え（E4 / Issue #58）。ルール一覧の label/description
+                // は builtin_rules(config) が生成するため、切り替え後は再走査して
+                // 反映する。
+                let mut lang_changed = false;
+                egui::ComboBox::from_id_salt("lang_select")
+                    .selected_text(match self.config.lang {
+                        Lang::Ja => "日本語",
+                        Lang::En => "English",
+                    })
                     .show_ui(ui, |ui| {
-                        for candidate in [
-                            pc_cleaner_core::RulePref::AskEachTime,
-                            pc_cleaner_core::RulePref::AlwaysSelect,
-                            pc_cleaner_core::RulePref::Exclude,
-                        ] {
+                        for candidate in [Lang::Ja, Lang::En] {
                             if ui
-                                .selectable_value(&mut pref, candidate, pref_label(candidate, lang))
+                                .selectable_value(
+                                    &mut self.config.lang,
+                                    candidate,
+                                    match candidate {
+                                        Lang::Ja => "日本語",
+                                        Lang::En => "English",
+                                    },
+                                )
                                 .changed()
                             {
-                                self.config.rule_prefs.insert(rule.id.clone(), pref);
-                                changed_rule = Some(rule.id.clone());
+                                lang_changed = true;
                             }
                         }
                     });
-                if let Some(default_days) = rule.age_threshold_days {
-                    let mut days = self.config.age_threshold_days(&rule.id, default_days);
-                    ui.horizontal(|ui| {
-                        ui.label(match lang {
-                            Lang::Ja => "しきい値（日）:",
-                            Lang::En => "Threshold (days):",
-                        });
-                        let resp = ui.add(egui::DragValue::new(&mut days).range(
-                            pc_cleaner_core::config::AGE_THRESHOLD_MIN_DAYS
-                                ..=pc_cleaner_core::config::AGE_THRESHOLD_MAX_DAYS,
-                        ));
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            self.config.age_thresholds.insert(rule.id.clone(), days);
-                            changed_threshold_rule_id = Some(rule.id.clone());
-                        }
-                    });
-                    ui.small(match lang {
-                        Lang::Ja => "変更すると再走査します。",
-                        Lang::En => "Changing this will trigger a rescan.",
-                    });
+                if lang_changed {
+                    self.save_config();
+                    self.start_scan(ctx);
                 }
-                ui.add_space(4.0);
-            }
-            if let Some(rule_id) = changed_rule {
-                view::reapply_pref_for_rule(&mut self.entries, &rule_id, &self.config);
-                self.plan_dirty = true;
-                self.save_config();
-            }
-            if changed_threshold_rule_id.is_some() {
-                // old_downloads は走査時（scan.rs）にしきい値でフィルタするため、
-                // reapply_pref_for_rule（走査済みエントリへの選択反映のみ）では
-                // 不十分。しきい値の変更は必ず再走査で反映する。
-                self.save_config();
-                self.start_scan(ctx);
-            }
+                ui.separator();
 
-            ui.separator();
-            // 他の設定項目（rule_prefs・age_thresholds・大容量しきい値等）と
-            // 挙動を揃え、この3項目も変更時に自動保存する（「設定を保存」
-            // ボタンを押し忘れると次回起動時に消える不整合の解消 / 追随漏れ
-            // 修正 / Issue #55）。
-            let mut settings_changed = false;
-            if ui
-                .checkbox(
-                    &mut self.config.use_trash,
-                    match lang {
-                        Lang::Ja => "ゴミ箱経由で削除する",
-                        Lang::En => "Delete via Recycle Bin",
-                    },
-                )
-                .on_hover_text(match lang {
-                    Lang::Ja => "オフにすると通常の削除は実行できず、プレビューのみになります。",
-                    Lang::En => {
-                        "When off, regular deletion cannot be executed; only preview is \
-                        available."
-                    }
-                })
-                .changed()
-            {
-                self.plan_dirty = true;
-                settings_changed = true;
-            }
-            if ui
-                .checkbox(
-                    &mut self.config.dry_run_default,
-                    match lang {
-                        Lang::Ja => "既定でドライラン",
-                        Lang::En => "Dry run by default",
-                    },
-                )
-                .changed()
-            {
-                self.plan_dirty = true;
-                settings_changed = true;
-            }
-            if ui
-                .checkbox(
-                    &mut self.config.audit_log_enabled,
-                    match lang {
-                        Lang::Ja => "削除ログを記録する",
-                        Lang::En => "Record a deletion log",
-                    },
-                )
-                .on_hover_text(match lang {
-                    Lang::Ja => {
-                        "いつ何を削除したかをパス付きで記録します（誤削除の追跡用）。\
-                         「これまでの実績」とは別ファイルで、無効化すると新規記録は行われません。"
-                    }
-                    Lang::En => {
-                        "Records what was deleted and when, with paths (for tracking \
-                        accidental deletions). This is a separate file from \"Past \
-                        results\"; disabling it stops new records from being added."
-                    }
-                })
-                .changed()
-            {
-                settings_changed = true;
-            }
-            if settings_changed {
-                self.save_config();
-            }
-
-            ui.separator();
-            // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
-            // 保持するが、入力は MB 単位のほうが扱いやすいためここで変換する。
-            // 変更は次回の走査から反映される（rule.large_file_threshold_bytes
-            // は走査時に builtin_rules() が Config から埋め込むため）。
-            let mut large_file_mb = (self.config.large_file_threshold_bytes / (1024 * 1024)).max(1);
-            let mut rescan_needed = false;
-            ui.horizontal(|ui| {
-                ui.label(match lang {
-                    Lang::Ja => "大容量ファイルのしきい値（MB）:",
-                    Lang::En => "Large file threshold (MB):",
+                ui.heading(match lang {
+                    Lang::Ja => "ルール別の既定",
+                    Lang::En => "Rule defaults",
                 });
+                ui.label(match lang {
+                    Lang::Ja => "常に選択 / 除外 / 毎回確認(推奨に従う)を設定できます。",
+                    Lang::En => {
+                        "You can set Always select / Always exclude / Ask each time \
+                    (follows the recommendation) per rule."
+                    }
+                });
+                ui.separator();
+
+                let mut changed_rule: Option<String> = None;
+                let mut changed_threshold_rule_id: Option<String> = None;
+                // `.show()` に渡すクロージャ内で `&mut self.config` を書き換えつつ
+                // `self.config` を読んで作った `Vec<Rule>` を同時に借用すると
+                // 競合するため、先にルール一覧をローカル変数へ取り出しておく
+                // （app.rs 内の他の `.show()` 呼び出しと同じパターン）。
+                //
+                // `self.rules`（現在の scope に絞り込み済み）ではなく
+                // `self.all_rules`（`RuleSet::all()`。rules.json の上書き・追加
+                // ルールを含む）を基点にする。Safe のみ走査中でも Caution /
+                // Review ルールの既定やユーザー定義ルールを設定できるようにし、
+                // かつラベルが rules.json の上書きに追随するようにするため
+                // （追随漏れ修正 / Issue #55）。
+                let scannable_rules: Vec<Rule> = self
+                    .all_rules
+                    .iter()
+                    .filter(|r| r.is_permitted(self.elevated))
+                    .cloned()
+                    .collect();
+                for rule in &scannable_rules {
+                    ui.label(&rule.label).on_hover_text(&rule.description);
+                    let mut pref = self
+                        .config
+                        .rule_prefs
+                        .get(&rule.id)
+                        .copied()
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt(&rule.id)
+                        .selected_text(pref_label(pref, lang))
+                        .show_ui(ui, |ui| {
+                            for candidate in [
+                                pc_cleaner_core::RulePref::AskEachTime,
+                                pc_cleaner_core::RulePref::AlwaysSelect,
+                                pc_cleaner_core::RulePref::Exclude,
+                            ] {
+                                if ui
+                                    .selectable_value(
+                                        &mut pref,
+                                        candidate,
+                                        pref_label(candidate, lang),
+                                    )
+                                    .changed()
+                                {
+                                    self.config.rule_prefs.insert(rule.id.clone(), pref);
+                                    changed_rule = Some(rule.id.clone());
+                                }
+                            }
+                        });
+                    if let Some(default_days) = rule.age_threshold_days {
+                        let mut days = self.config.age_threshold_days(&rule.id, default_days);
+                        ui.horizontal(|ui| {
+                            ui.label(match lang {
+                                Lang::Ja => "しきい値（日）:",
+                                Lang::En => "Threshold (days):",
+                            });
+                            let resp = ui.add(egui::DragValue::new(&mut days).range(
+                                pc_cleaner_core::config::AGE_THRESHOLD_MIN_DAYS
+                                    ..=pc_cleaner_core::config::AGE_THRESHOLD_MAX_DAYS,
+                            ));
+                            if resp.drag_stopped() || resp.lost_focus() {
+                                self.config.age_thresholds.insert(rule.id.clone(), days);
+                                changed_threshold_rule_id = Some(rule.id.clone());
+                            }
+                        });
+                        ui.small(match lang {
+                            Lang::Ja => "変更すると再走査します。",
+                            Lang::En => "Changing this will trigger a rescan.",
+                        });
+                    }
+                    ui.add_space(4.0);
+                }
+                if let Some(rule_id) = changed_rule {
+                    view::reapply_pref_for_rule(&mut self.entries, &rule_id, &self.config);
+                    self.plan_dirty = true;
+                    self.save_config();
+                }
+                if changed_threshold_rule_id.is_some() {
+                    // old_downloads は走査時（scan.rs）にしきい値でフィルタするため、
+                    // reapply_pref_for_rule（走査済みエントリへの選択反映のみ）では
+                    // 不十分。しきい値の変更は必ず再走査で反映する。
+                    self.save_config();
+                    self.start_scan(ctx);
+                }
+
+                ui.separator();
+                // 他の設定項目（rule_prefs・age_thresholds・大容量しきい値等）と
+                // 挙動を揃え、この3項目も変更時に自動保存する（「設定を保存」
+                // ボタンを押し忘れると次回起動時に消える不整合の解消 / 追随漏れ
+                // 修正 / Issue #55）。
+                let mut settings_changed = false;
                 if ui
-                    .add(egui::DragValue::new(&mut large_file_mb).range(1..=1_048_576))
+                    .checkbox(
+                        &mut self.config.use_trash,
+                        match lang {
+                            Lang::Ja => "ゴミ箱経由で削除する",
+                            Lang::En => "Delete via Recycle Bin",
+                        },
+                    )
                     .on_hover_text(match lang {
                         Lang::Ja => {
-                            "この値以上のファイルには「サイズが大きい」注意書きが付きます。"
+                            "オフにすると通常の削除は実行できず、プレビューのみになります。"
                         }
-                        Lang::En => "Files at or above this size get a \"large file\" note.",
+                        Lang::En => {
+                            "When off, regular deletion cannot be executed; only preview is \
+                        available."
+                        }
                     })
                     .changed()
                 {
-                    self.config.large_file_threshold_bytes = large_file_mb * 1024 * 1024;
+                    self.plan_dirty = true;
+                    settings_changed = true;
+                }
+                if ui
+                    .checkbox(
+                        &mut self.config.dry_run_default,
+                        match lang {
+                            Lang::Ja => "既定でドライラン",
+                            Lang::En => "Dry run by default",
+                        },
+                    )
+                    .changed()
+                {
+                    self.plan_dirty = true;
+                    settings_changed = true;
+                }
+                if ui
+                    .checkbox(
+                        &mut self.config.audit_log_enabled,
+                        match lang {
+                            Lang::Ja => "削除ログを記録する",
+                            Lang::En => "Record a deletion log",
+                        },
+                    )
+                    .on_hover_text(match lang {
+                        Lang::Ja => {
+                            "いつ何を削除したかをパス付きで記録します（誤削除の追跡用）。\
+                         「これまでの実績」とは別ファイルで、無効化すると新規記録は行われません。"
+                        }
+                        Lang::En => {
+                            "Records what was deleted and when, with paths (for tracking \
+                        accidental deletions). This is a separate file from \"Past \
+                        results\"; disabling it stops new records from being added."
+                        }
+                    })
+                    .changed()
+                {
+                    settings_changed = true;
+                }
+                if settings_changed {
+                    self.save_config();
+                }
+
+                ui.separator();
+                // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
+                // 保持するが、入力は MB 単位のほうが扱いやすいためここで変換する。
+                // 変更は次回の走査から反映される（rule.large_file_threshold_bytes
+                // は走査時に builtin_rules() が Config から埋め込むため）。
+                let mut large_file_mb =
+                    (self.config.large_file_threshold_bytes / (1024 * 1024)).max(1);
+                let mut rescan_needed = false;
+                ui.horizontal(|ui| {
+                    ui.label(match lang {
+                        Lang::Ja => "大容量ファイルのしきい値（MB）:",
+                        Lang::En => "Large file threshold (MB):",
+                    });
+                    if ui
+                        .add(egui::DragValue::new(&mut large_file_mb).range(1..=1_048_576))
+                        .on_hover_text(match lang {
+                            Lang::Ja => {
+                                "この値以上のファイルには「サイズが大きい」注意書きが付きます。"
+                            }
+                            Lang::En => "Files at or above this size get a \"large file\" note.",
+                        })
+                        .changed()
+                    {
+                        self.config.large_file_threshold_bytes = large_file_mb * 1024 * 1024;
+                        rescan_needed = true;
+                    }
+                });
+                if ui
+                    .checkbox(
+                        &mut self.config.detect_duplicates,
+                        match lang {
+                            Lang::Ja => "重複ファイルを検出する（走査が遅くなります）",
+                            Lang::En => "Detect duplicate files (slows down scanning)",
+                        },
+                    )
+                    .changed()
+                {
                     rescan_needed = true;
                 }
-            });
-            if ui
-                .checkbox(
-                    &mut self.config.detect_duplicates,
-                    match lang {
-                        Lang::Ja => "重複ファイルを検出する（走査が遅くなります）",
-                        Lang::En => "Detect duplicate files (slows down scanning)",
-                    },
-                )
-                .changed()
-            {
-                rescan_needed = true;
-            }
-            if ui
+                if ui
                 .checkbox(
                     &mut self.config.user_rules_enabled,
                     match lang {
@@ -849,74 +857,74 @@ impl App {
             {
                 rescan_needed = true;
             }
-            if rescan_needed {
-                self.save_config();
-                self.start_scan(ctx);
-            }
-
-            if ui
-                .button(match lang {
-                    Lang::Ja => "設定を保存",
-                    Lang::En => "Save settings",
-                })
-                .clicked()
-            {
-                self.save_config();
-            }
-            if let Some(path) = &self.config_path {
-                ui.small(match lang {
-                    Lang::Ja => format!("保存先: {}", path.display()),
-                    Lang::En => format!("Saved to: {}", path.display()),
-                });
-            }
-
-            ui.separator();
-            egui::CollapsingHeader::new(match lang {
-                Lang::Ja => "これまでの実績",
-                Lang::En => "Past results",
-            })
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.label(match lang {
-                    Lang::Ja => format!(
-                        "累計 {} を解放（{} 回）",
-                        view::human_size(self.history.total_freed_bytes()),
-                        self.history.run_count()
-                    ),
-                    Lang::En => format!(
-                        "{} freed in total ({} runs)",
-                        view::human_size(self.history.total_freed_bytes()),
-                        self.history.run_count()
-                    ),
-                });
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let restore_label = match lang {
-                    Lang::Ja => "🔄 元に戻す",
-                    Lang::En => "🔄 Undo",
-                };
-                for row in view::history_rows(&self.history, now_secs, 5, lang) {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}: {}", row.when, row.summary));
-                        // run_id == 0 は #51 より前の実績で監査ログとの
-                        // 対応が無く、復元候補を特定できない
-                        // （HistoryRow::run_id のドキュメント参照）。
-                        if row.run_id != 0 && ui.small_button(restore_label).clicked() {
-                            self.confirming_restore_run_id = Some(row.run_id);
-                        }
-                    });
+                if rescan_needed {
+                    self.save_config();
+                    self.start_scan(ctx);
                 }
-                if let Some(path) = &self.history_path {
+
+                if ui
+                    .button(match lang {
+                        Lang::Ja => "設定を保存",
+                        Lang::En => "Save settings",
+                    })
+                    .clicked()
+                {
+                    self.save_config();
+                }
+                if let Some(path) = &self.config_path {
                     ui.small(match lang {
                         Lang::Ja => format!("保存先: {}", path.display()),
                         Lang::En => format!("Saved to: {}", path.display()),
                     });
                 }
-                if let Some(summary) = &self.last_restore_outcome {
-                    ui.separator();
+
+                ui.separator();
+                egui::CollapsingHeader::new(match lang {
+                    Lang::Ja => "これまでの実績",
+                    Lang::En => "Past results",
+                })
+                .default_open(false)
+                .show(ui, |ui| {
                     ui.label(match lang {
+                        Lang::Ja => format!(
+                            "累計 {} を解放（{} 回）",
+                            view::human_size(self.history.total_freed_bytes()),
+                            self.history.run_count()
+                        ),
+                        Lang::En => format!(
+                            "{} freed in total ({} runs)",
+                            view::human_size(self.history.total_freed_bytes()),
+                            self.history.run_count()
+                        ),
+                    });
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let restore_label = match lang {
+                        Lang::Ja => "🔄 元に戻す",
+                        Lang::En => "🔄 Undo",
+                    };
+                    for row in view::history_rows(&self.history, now_secs, 5, lang) {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}: {}", row.when, row.summary));
+                            // run_id == 0 は #51 より前の実績で監査ログとの
+                            // 対応が無く、復元候補を特定できない
+                            // （HistoryRow::run_id のドキュメント参照）。
+                            if row.run_id != 0 && ui.small_button(restore_label).clicked() {
+                                self.confirming_restore_run_id = Some(row.run_id);
+                            }
+                        });
+                    }
+                    if let Some(path) = &self.history_path {
+                        ui.small(match lang {
+                            Lang::Ja => format!("保存先: {}", path.display()),
+                            Lang::En => format!("Saved to: {}", path.display()),
+                        });
+                    }
+                    if let Some(summary) = &self.last_restore_outcome {
+                        ui.separator();
+                        ui.label(match lang {
                         Lang::Ja => format!(
                             "直近の復元: 成功 {} 件 / スキップ {} 件 / 対象消失 {} 件 / 失敗 {} 件",
                             summary.restored, summary.skipped, summary.not_found, summary.failed
@@ -926,24 +934,24 @@ impl App {
                             summary.restored, summary.skipped, summary.not_found, summary.failed
                         ),
                     });
-                    for (path, message) in &summary.failures {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            format!("  {}: {message}", path.display()),
-                        );
+                        for (path, message) in &summary.failures {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                format!("  {}: {message}", path.display()),
+                            );
+                        }
                     }
-                }
-            });
+                });
 
-            ui.separator();
-            egui::CollapsingHeader::new(match lang {
-                Lang::Ja => "削除ログ",
-                Lang::En => "Deletion log",
-            })
-            .default_open(false)
-            .show(ui, |ui| {
-                if !self.config.audit_log_enabled {
-                    ui.small(match lang {
+                ui.separator();
+                egui::CollapsingHeader::new(match lang {
+                    Lang::Ja => "削除ログ",
+                    Lang::En => "Deletion log",
+                })
+                .default_open(false)
+                .show(ui, |ui| {
+                    if !self.config.audit_log_enabled {
+                        ui.small(match lang {
                         Lang::Ja => {
                             "記録を無効化しています（上の「削除ログを記録する」で再開できます）。"
                         }
@@ -952,73 +960,74 @@ impl App {
                             deletion log\")."
                         }
                     });
-                }
-                ui.label(match lang {
-                    Lang::Ja => format!("{} 件を記録", self.audit_records.len()),
-                    Lang::En => format!("{} records", self.audit_records.len()),
-                });
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                for row in view::audit_rows(&self.audit_records, now_secs, 5, lang) {
-                    ui.label(format!("{}: {}", row.when, row.summary))
-                        .on_hover_text(&row.path);
-                }
-                if let Some(path) = &self.audit_path {
-                    ui.small(match lang {
-                        Lang::Ja => format!("保存先: {}", path.display()),
-                        Lang::En => format!("Saved to: {}", path.display()),
+                    }
+                    ui.label(match lang {
+                        Lang::Ja => format!("{} 件を記録", self.audit_records.len()),
+                        Lang::En => format!("{} records", self.audit_records.len()),
                     });
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    for row in view::audit_rows(&self.audit_records, now_secs, 5, lang) {
+                        ui.label(format!("{}: {}", row.when, row.summary))
+                            .on_hover_text(&row.path);
+                    }
+                    if let Some(path) = &self.audit_path {
+                        ui.small(match lang {
+                            Lang::Ja => format!("保存先: {}", path.display()),
+                            Lang::En => format!("Saved to: {}", path.display()),
+                        });
+                    }
+                });
+
+                ui.separator();
+                egui::CollapsingHeader::new(match lang {
+                    Lang::Ja => "ルール定義",
+                    Lang::En => "Rule definitions",
+                })
+                .default_open(false)
+                .show(ui, |ui| {
+                    let user_defined = self.all_rules.iter().filter(|r| r.is_user_defined).count();
+                    ui.label(match lang {
+                        Lang::Ja => format!("ユーザー定義ルール: {user_defined} 件"),
+                        Lang::En => format!("User-defined rules: {user_defined}"),
+                    });
+                    if let Some(path) = &self.rules_path {
+                        ui.small(match lang {
+                            Lang::Ja => format!("読込元: {}", path.display()),
+                            Lang::En => format!("Loaded from: {}", path.display()),
+                        });
+                    }
+                });
+
+                let future_rules = view::future_rules(&self.all_rules, self.elevated);
+                if !future_rules.is_empty() {
+                    ui.separator();
+                    ui.heading(match lang {
+                        Lang::Ja => "管理者権限が必要（未昇格のため対象外）",
+                        Lang::En => "Requires administrator privileges (excluded until elevated)",
+                    });
+                    for rule in &future_rules {
+                        ui.label(format!("🔒 {}", rule.label))
+                            .on_hover_text(&rule.description);
+                    }
+                }
+
+                if !self.skipped.is_empty() {
+                    ui.separator();
+                    ui.heading(match lang {
+                        Lang::Ja => "スキップされたルール",
+                        Lang::En => "Skipped rules",
+                    });
+                    for (rule_id, reason) in &self.skipped {
+                        ui.label(format!(
+                            "{rule_id}: {}",
+                            view::skip_reason_label(reason, lang)
+                        ));
+                    }
                 }
             });
-
-            ui.separator();
-            egui::CollapsingHeader::new(match lang {
-                Lang::Ja => "ルール定義",
-                Lang::En => "Rule definitions",
-            })
-            .default_open(false)
-            .show(ui, |ui| {
-                let user_defined = self.all_rules.iter().filter(|r| r.is_user_defined).count();
-                ui.label(match lang {
-                    Lang::Ja => format!("ユーザー定義ルール: {user_defined} 件"),
-                    Lang::En => format!("User-defined rules: {user_defined}"),
-                });
-                if let Some(path) = &self.rules_path {
-                    ui.small(match lang {
-                        Lang::Ja => format!("読込元: {}", path.display()),
-                        Lang::En => format!("Loaded from: {}", path.display()),
-                    });
-                }
-            });
-
-            let future_rules = view::future_rules(&self.all_rules, self.elevated);
-            if !future_rules.is_empty() {
-                ui.separator();
-                ui.heading(match lang {
-                    Lang::Ja => "管理者権限が必要（未対応）",
-                    Lang::En => "Requires administrator privileges (not yet available)",
-                });
-                for rule in &future_rules {
-                    ui.label(format!("🔒 {}", rule.label))
-                        .on_hover_text(&rule.description);
-                }
-            }
-
-            if !self.skipped.is_empty() {
-                ui.separator();
-                ui.heading(match lang {
-                    Lang::Ja => "スキップされたルール",
-                    Lang::En => "Skipped rules",
-                });
-                for (rule_id, reason) in &self.skipped {
-                    ui.label(format!(
-                        "{rule_id}: {}",
-                        view::skip_reason_label(reason, lang)
-                    ));
-                }
-            }
         });
     }
 

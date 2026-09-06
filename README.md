@@ -20,32 +20,17 @@ Rust のビルド環境は不要です。[Releases](https://github.com/sugiyan97
 - `pc-cleaner-<tag>-windows-x86_64.exe` … CLI（検証・自動化用）
 - `pc-cleaner-gui-<tag>-windows-x86_64.exe` … GUI（手動選択 UI。通常はこちらを使う）
 
-署名は行っていないため、初回起動時に Windows Defender SmartScreen の警告が出ることがあります。ソースからビルドしたい場合、または Windows 以外の環境で `core` を使う場合は以下の「開発」を参照してください。
+署名は行っていないため、初回起動時に Windows Defender SmartScreen の警告が出ることがあります。ソースからビルドしたい場合、または Windows 以外の環境で `core` を使う場合は「[開発](#開発)」を参照してください。
 
-## 開発
+## 使い方
 
-以下はソースからビルドする場合や、コントリビュートする場合の情報です。実行ファイルを使うだけであれば上記の「インストール」を参照してください。
+### GUI
 
-### 現在の状況
+GUI（実行バイナリ名 `pc-cleaner-gui`）は起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。サイドバーから表示言語を日本語/英語に切り替えられ、選択は `config.json` に保存されます。
 
-初版は Cargo workspace として実装済みです。`core` crate（ロジック本体）を中心に、以下が実装済みです。
+### CLI
 
-| モジュール | 内容 |
-|---|---|
-| `core/src/rule.rs` | 掃除ルール（許可リスト）の型定義と初期ルールセット |
-| `core/src/ruleset.rs` | ルール定義ファイル（`rules.json`）による組み込みルールの上書き・追加ルールの検証・解決 |
-| `core/src/entry.rs` | 走査結果の候補エントリ（`ScanEntry`） |
-| `core/src/platform/` | OS 固有知識を隠蔽する `Platform` trait、Windows 実装、他 OS 向け最小スタブ |
-| `core/src/scan.rs` | ルールの基点配下を走査し `ScanEntry` を生成する走査機能 |
-| `core/src/recommend.rs` | 安全度・経過日数から推奨可否を判定する純粋関数 |
-| `core/src/config.rs` | ユーザー設定の JSON 永続化 |
-| `core/src/delete.rs` | 「走査 → プレビュー → 実行」を型で強制する削除実行（ゴミ箱送り／ドライラン／完全削除） |
-| `core/src/restore.rs` | ゴミ箱一覧と削除ログの突き合わせ・復元の実行（ロールバック補助） |
-| `core/src/format.rs` | CLI/GUI 共通の表示フォーマッタ（`human_size` 等） |
-
-### ソースから実行する
-
-薄い CLI（`cli` crate、実行バイナリ名 `pc-cleaner`）が実装済みです。
+CLI の実行バイナリ名は `pc-cleaner` です（Releases の配布物を使う場合は、ダウンロードしたファイル名で読み替えてください）。
 
 ```sh
 pc-cleaner scan               # Safe ルールを走査して一覧表示（削除しない）
@@ -66,17 +51,34 @@ pc-cleaner schedule status             # 登録状況を表示する
 pc-cleaner schedule uninstall          # 登録を削除する
 ```
 
+#### 削除ログ（`log`）
+
 `log` は `clean` の実行結果を記録した削除ログ（`<config_dir>/deletion_log.jsonl`）を表示するだけで、何も削除しません。誤削除が起きた際の追跡用に、実行のたびにパス付きで項目単位の記録を残します（既定で有効。無効化する場合は `config.json` の `audit_log_enabled` を `false` にするか、GUI の「削除ログを記録する」チェックボックスを外してください）。
+
+#### 機械可読出力（`--format` / `--output`）
 
 `--format json|csv` はレビューや自動化連携向けに走査結果・削除計画を機械可読な形で出力するだけで、削除の実行可否そのものは変えません（`--format json` を付けても `clean` は通常どおり削除を実行します。プレビューだけが欲しい場合は `--dry-run` と併用してください）。`--output` を省略すると標準出力に出力し、その際は自動化のパイプを壊さないよう一覧やサマリなどの人間向け出力は表示しません。
 
-`restore` は誤ってゴミ箱送りにしてしまった項目を元の場所へ戻すための導線です。ゴミ箱の中身と削除ログを突き合わせ、pc-cleaner が削除したと確認できるものだけを既定の対象にします（`--all-trash` を付けると他アプリが削除した可能性があるものも含めて一覧・対象にします）。既定では一覧表示のみで何も変更せず、`--yes` を付けたときだけ実際に復元します。復元先に既に同名のファイルがある場合は上書きせず、その項目だけスキップします。GUI では「これまでの実績」の各行にある「🔄 元に戻す」ボタンから、その実行分をまとめて復元できます。
+#### 復元（`restore`）
 
-`--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。昇格すると、管理者権限が必要な領域（`system_temp` = `C:\Windows\Temp`）も走査・削除の対象になります。ただし既定では選択されず（Safety: Review）、内容を確認したうえで手動で選択する必要があります。
+`restore` は誤ってゴミ箱送りにしてしまった項目を元の場所へ戻すための導線です。
 
-`schedule` は Windows のタスクスケジューラと連携し、無人の状態で定期的に自動掃除するための導線です（`install` は既存タスクがあれば内容を更新します）。登録される内容は常に `pc-cleaner clean --scheduled`（**Safe ルールのみ・ゴミ箱経由・管理者権限不要**）に固定されており、`--all` / `--permanent` / `--admin` を組み合わせることはできません。`--weekly` を付けない場合は毎日、付けた場合は毎週日曜日に実行します。
+- ゴミ箱の中身と削除ログを突き合わせ、pc-cleaner が削除したと確認できるものだけを既定の対象にします。`--all-trash` を付けると、他アプリが削除した可能性があるものも含めて一覧・対象にします。
+- 既定では一覧表示のみで何も変更せず、`--yes` を付けたときだけ実際に復元します。
+- 復元先に既に同名のファイルがある場合は上書きせず、その項目だけスキップします。
+- GUI では「これまでの実績」の各行にある「🔄 元に戻す」ボタンから、その実行分をまとめて復元できます。
 
-#### ルール定義ファイル（`rules.json`）
+#### 管理者権限領域（`--admin`）
+
+`--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。
+
+昇格すると、管理者権限が必要な領域（`system_temp` = `C:\Windows\Temp`）も走査・削除の対象になります。ただし既定では選択されず（Safety: Review）、内容を確認したうえで手動で選択する必要があります。
+
+#### 定期実行（`schedule`）
+
+`schedule` は Windows のタスクスケジューラと連携し、無人の状態で定期的に自動掃除するための導線です（`install` は既存タスクがあれば内容を更新します）。登録される内容は常に `pc-cleaner clean --scheduled`（Safe ルールのみ・ゴミ箱経由・管理者権限不要）に固定されており、`--all` / `--permanent` / `--admin` を組み合わせることはできません。`--weekly` を付けない場合は毎日、付けた場合は毎週日曜日に実行します。
+
+## ルール定義ファイル（`rules.json`）
 
 `<config_dir>/rules.json` を置くと、組み込みルールの一部設定を上書きしたり、独自のルールを追加したりできます（無効化する場合は `config.json` の `user_rules_enabled` を `false` にするか、GUI の「ルール定義ファイルを読み込む」チェックボックスを外してください）。
 
@@ -108,17 +110,19 @@ pc-cleaner schedule uninstall          # 登録を削除する
 
 ファイルが存在しない・壊れている場合は組み込みルールのみで動作し、個別のルール記述に誤りがある場合もそのルールだけを無視して続行します。
 
-egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。サイドバーから表示言語を日本語/英語に切り替えられ、選択は `config.json` に保存されます。
+## 開発
 
-```sh
-cargo run -p pc-cleaner-gui
-```
+以下はソースからビルドする場合や、コントリビュートする場合の情報です。実行ファイルを使うだけであれば上記の「[インストール](#インストールwindows)」を参照してください。
 
-非Windows環境では `Platform::known_dir` が常に `None` を返すため走査結果は常に空になります。実装の目視確認用に、一時ディレクトリ配下だけで完結するサンプルデータを使う `demo` feature を用意しています（ユーザーの実ファイルには一切触れません）。
+### 構成
 
-```sh
-cargo run -p pc-cleaner-gui --features demo -- --demo
-```
+Cargo workspace で、3つの crate から成ります。
+
+- `core` … ロジック本体（UI 非依存）。ルール定義と `rules.json` の解決（`rule.rs` / `ruleset.rs`）、走査と候補エントリ（`scan.rs` / `entry.rs`）、推奨判定（`recommend.rs`、純粋関数）、「走査 → プレビュー → 実行」を型で強制する削除実行（`delete.rs`）、削除ログとの突き合わせによる復元（`restore.rs`）、設定の JSON 永続化（`config.rs`）、CLI/GUI 共通の表示フォーマッタ（`format.rs`）、OS 固有知識を隠蔽する `Platform` trait（`platform/`。Windows 実装と他 OS 向け最小スタブ）を含む。
+- `cli` … 薄い CLI（実行バイナリ名 `pc-cleaner`）。
+- `gui` … egui による GUI（実行バイナリ名 `pc-cleaner-gui`）。
+
+各モジュールの責務・機能要件の詳細は [`docs/requirements.md`](docs/requirements.md) を参照してください。
 
 初版実装は [Issue #2](https://github.com/sugiyan97/pc-cleaner/issues/2)（親 Issue）以下の Sub Issue で管理し、完了済みです。以降の不具合対応・将来対応は [Issues](https://github.com/sugiyan97/pc-cleaner/issues) で管理しています。
 
@@ -134,6 +138,18 @@ cargo fmt --all -- --check
 ```
 
 `core` は現状 Windows 固有のゴミ箱送り実装（`trash` クレート）を Windows ターゲット限定の依存として持ちますが、`core` crate 自体は macOS / Linux 上でもビルド・テストできます（`platform/windows.rs` 以外に OS 固有コードは存在しません）。CI（GitHub Actions）は `windows-latest` 上で上記コマンドを実行します。
+
+### ソースから実行する
+
+```sh
+cargo run -p pc-cleaner-gui
+```
+
+非 Windows 環境では `Platform::known_dir` が常に `None` を返すため走査結果は常に空になります。実装の目視確認用に、一時ディレクトリ配下だけで完結するサンプルデータを使う `demo` feature を用意しています（ユーザーの実ファイルには一切触れません）。
+
+```sh
+cargo run -p pc-cleaner-gui --features demo -- --demo
+```
 
 ### macOS からの Windows 向けクロスビルド（ローカル動作確認用）
 
@@ -154,9 +170,9 @@ scripts/build-windows.sh
 
 ### リリース手順（メンテナ向け）
 
-`v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開する（上記「インストール」の配布物はここで作られる。署名・インストーラは対象外。`docs/requirements.md`「8. 将来拡張要件」E3 の初版範囲）。
+`v*.*.*` 形式の Git タグ（例：`v0.1.0`）を push すると、`.github/workflows/release.yml` が Windows 向けリリースビルドを作成し、GitHub Release として公開します（上記「インストール」の配布物はここで作られます。署名・インストーラは対象外。`docs/requirements.md`「8. 将来拡張要件」E3 の初版範囲）。
 
-タグの値は `Cargo.toml` の `[workspace.package] version` と一致している必要があり、一致しない場合はワークフローが失敗する。リリース手順：
+タグの値は `Cargo.toml` の `[workspace.package] version` と一致している必要があり、一致しない場合はワークフローが失敗します。リリース手順：
 
 1. `Cargo.toml` の `[workspace.package] version` を更新するコミットを作成する
 2. `git tag v<version>` でタグを付け、`git push origin v<version>` で push する

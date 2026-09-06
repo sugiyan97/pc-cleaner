@@ -73,6 +73,16 @@ pub struct Rule {
     /// 推奨可否そのものは変えない。大きな注意書きを出す意味が薄いルール
     /// （既に個別ファイル単位で確認が前提のもの等）では `None` のままでよい。
     pub large_file_threshold_bytes: Option<u64>,
+    /// ルール定義ファイル（`<config_dir>/rules.json` / `crate::ruleset` /
+    /// Issue #54）に由来するユーザー定義ルールか。組み込みルール
+    /// （`builtin_rules`）は常に `false`。
+    ///
+    /// `crate::ruleset::build_user_rule` がユーザー定義ルールを組み立てる
+    /// ときにのみ `true` を設定する。安全性の判定（`is_permitted` /
+    /// `may_touch_admin_area`）には使わない：ユーザー定義ルールは
+    /// `needs_admin` を宣言できず常に `false` になるため、既存の判定が
+    /// そのまま安全側に働く。本フィールドは表示・集計用の由来情報。
+    pub is_user_defined: bool,
 }
 
 impl Rule {
@@ -143,6 +153,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             safety: Safety::Safe,
             age_threshold_days: None,
             large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
+            is_user_defined: false,
         },
         Rule {
             id: "browser_cache".to_string(),
@@ -158,6 +169,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             safety: Safety::Safe,
             age_threshold_days: None,
             large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
+            is_user_defined: false,
         },
         Rule {
             id: "thumbnail_cache".to_string(),
@@ -177,6 +189,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // サムネイルキャッシュの個々のファイルが大容量になることは
             // ほぼ無く、大容量注意の告知に意味がないため None のまま。
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         },
         Rule {
             id: "recycle_bin".to_string(),
@@ -198,6 +211,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             // 既にユーザーが「実行前に中身を確認」する前提のルールであり、
             // 大容量注意の告知を重ねる意味が薄いため None のまま。
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         },
         Rule {
             id: "old_logs".to_string(),
@@ -214,6 +228,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             safety: Safety::Caution,
             age_threshold_days: Some(old_log_threshold_days),
             large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
+            is_user_defined: false,
         },
         Rule {
             id: "old_downloads".to_string(),
@@ -229,6 +244,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             safety: Safety::Review,
             age_threshold_days: Some(old_download_threshold_days),
             large_file_threshold_bytes: Some(config.large_file_threshold_bytes),
+            is_user_defined: false,
         },
         Rule {
             id: "system_temp".to_string(),
@@ -251,6 +267,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             age_threshold_days: None,
             // 管理者権限領域で、既に個別確認が前提のルールのため None のまま。
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         },
         Rule {
             id: "windows_update_cache".to_string(),
@@ -281,6 +298,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             age_threshold_days: None,
             // system_temp と同じ理由で None のまま。
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         },
         Rule {
             id: "delivery_optimization_cache".to_string(),
@@ -309,6 +327,7 @@ pub fn builtin_rules(config: &Config) -> Vec<Rule> {
             age_threshold_days: None,
             // system_temp と同じ理由で None のまま。
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         },
     ]
 }
@@ -474,6 +493,7 @@ mod tests {
             safety,
             age_threshold_days: None,
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         }
     }
 

@@ -176,6 +176,7 @@ mod tests {
             safety,
             age_threshold_days,
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         }
     }
 

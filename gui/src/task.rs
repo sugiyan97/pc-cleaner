@@ -9,8 +9,8 @@
 
 use pc_cleaner_core::platform::{self, Platform};
 use pc_cleaner_core::{
-    Config, DeleteOutcome, DeletePlan, DeleteProgress, Rule, ScanEntry, ScanProgress, delete,
-    rules_for_safeties, scan_pipeline_with_progress,
+    Config, DeleteOutcome, DeletePlan, DeleteProgress, Rule, RuleSet, ScanEntry, ScanProgress,
+    delete, scan_pipeline_with_progress,
 };
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -25,6 +25,9 @@ pub enum WorkerMsg {
     ScanDone {
         rules: Vec<Rule>,
         entries: Vec<ScanEntry>,
+        /// ルール定義ファイル（D4 / Issue #54）の読み込み・検証で見つかった
+        /// 問題。空なら警告なし。
+        rule_issues: Vec<String>,
     },
     /// 削除の進捗イベント。
     Delete(DeleteProgress),
@@ -52,6 +55,8 @@ pub fn make_platform(demo: bool) -> Box<dyn Platform> {
 ///
 /// `scan_pipeline_with_progress`（走査 + `apply_rule_prefs`）を呼ぶだけで、
 /// CLI の `scan_and_apply_prefs` と同じ core 呼び出し列を保つ（F-CLI-08）。
+/// ルール一覧は `RuleSet::load`（組み込み + ルール定義ファイルの上書き・
+/// 追加、D4 / Issue #54）で解決する。
 pub fn spawn_scan(
     ctx: egui::Context,
     scope: Scope,
@@ -61,7 +66,13 @@ pub fn spawn_scan(
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let platform = make_platform(demo);
-        let rules = rules_for_safeties(&scope.safeties(), &config, platform.is_elevated());
+        let rule_set = RuleSet::load(platform.as_ref(), &config);
+        let rule_issues = rule_set
+            .issues()
+            .iter()
+            .map(|issue| issue.message.clone())
+            .collect();
+        let rules = rule_set.for_safeties(&scope.safeties(), platform.is_elevated());
         let progress_tx = tx.clone();
         let progress_ctx = ctx.clone();
         let entries =
@@ -69,7 +80,11 @@ pub fn spawn_scan(
                 let _ = progress_tx.send(WorkerMsg::Scan(event));
                 progress_ctx.request_repaint();
             });
-        let _ = tx.send(WorkerMsg::ScanDone { rules, entries });
+        let _ = tx.send(WorkerMsg::ScanDone {
+            rules,
+            entries,
+            rule_issues,
+        });
         ctx.request_repaint();
     });
     rx

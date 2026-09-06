@@ -551,6 +551,7 @@ mod tests {
             safety: Safety::Safe,
             age_threshold_days: None,
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         }
     }
 

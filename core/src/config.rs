@@ -58,6 +58,13 @@ pub struct Config {
     /// 同様に既定 ON とする。`history.rs` と異なりパスを記録するため
     /// （プライバシー配慮）、こちらのみユーザーが無効化できるようにする。
     pub audit_log_enabled: bool,
+    /// ルール定義ファイル（`<config_dir>/rules.json` / `crate::ruleset` /
+    /// Issue #54）を読み込み、組み込みルールへ反映するか。
+    ///
+    /// 既定は `true`。ファイルが存在しなければ何も起きない（ファイルの
+    /// 存在自体がオプトインであり、既定 `true` でも安全側に倒れている）ため、
+    /// 本フィールドは「ファイルがあっても無視したい」場合のキルスイッチ。
+    pub user_rules_enabled: bool,
 }
 
 /// 既定の大容量ファイルしきい値（1 GiB）。
@@ -73,6 +80,7 @@ impl Default for Config {
             large_file_threshold_bytes: DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
             detect_duplicates: false,
             audit_log_enabled: true,
+            user_rules_enabled: true,
         }
     }
 }
@@ -152,6 +160,10 @@ mod tests {
         assert!(
             config.audit_log_enabled,
             "誤削除の追跡は事後の有効化では手遅れのため既定 true"
+        );
+        assert!(
+            config.user_rules_enabled,
+            "ファイルの存在自体がオプトインのため既定 true"
         );
     }
 
@@ -233,6 +245,24 @@ mod tests {
         let config = load(&path);
         assert!(
             config.audit_log_enabled,
+            "コンテナ属性 #[serde(default)] により既定 true で補われる"
+        );
+    }
+
+    #[test]
+    fn load_accepts_config_written_before_user_rules_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // user_rules_enabled が存在しなかった頃の config.json を模す。
+        fs::write(
+            &path,
+            r#"{"rule_prefs":{},"use_trash":true,"dry_run_default":true}"#,
+        )
+        .unwrap();
+
+        let config = load(&path);
+        assert!(
+            config.user_rules_enabled,
             "コンテナ属性 #[serde(default)] により既定 true で補われる"
         );
     }

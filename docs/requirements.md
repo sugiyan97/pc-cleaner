@@ -74,7 +74,6 @@
 - macOS / Linux 向けの `Platform` 実装（`platform/unknown.rs` の最小スタブのみ用意する）
 - 経過日数しきい値のユーザー調整 UI（初版はルールにハードコードすること）
 - ロールバック補助
-- ルール定義の外部ファイル化
 - 定期実行 / スケジューラ連携、多言語対応
 
 ### 3.3 境界の明確化
@@ -116,7 +115,7 @@ pc-cleaner/
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
 - `Platform` trait は次の 5 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）。
 - `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、要管理者。A1 / Issue #40 で有効化済み）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）、`WindowsUpdateCache`（`%SystemRoot%\SoftwareDistribution\Download`、要管理者。A3 / Issue #42）、`DeliveryOptimizationCache`（`%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`、要管理者。A4 / Issue #43）を持つこと。
-- ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。
+- ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。組み込みルールに限らず、ルール定義ファイル（`rules.json` / D4 / Issue #54）によるユーザー定義ルールでも同様であり、`base` は `KnownDir` の名前を指す文字列としてのみ受け付けること（5.11 F-RULE-03）。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
 - `platform/windows.rs` に入れてよいのはパス解決とゴミ箱送りのみとし、ルールとロジックは OS 非依存のまま保つこと。
 - ゴミ箱送りには `trash` クレートを用いること。同クレートはクロスプラットフォーム対応であるため `to_trash` の実装は薄く保つこと。
@@ -286,6 +285,24 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 - 実行単位の識別子（`run_id`）は `history.rs` の `HistoryEntry` にも埋め込み、両者を突き合わせられるようにする。将来のロールバック補助（D3 / Issue #53）が「この実行をまとめて元に戻す」導線に使う想定。
 - 監査ログの書き込みは削除の成否そのものには影響しない読み取り専用の副作用であり、許可リスト方式（NF-SAF-04）やその他の安全性ゲートには影響しない。
 
+### 5.11 ルール定義の外部ファイル化（D4）
+
+将来対応 D4（Issue #54）で追加。`<config_dir>/rules.json` により、組み込みルール（`builtin_rules`）の一部設定を上書きし、ユーザー定義のルールを追加できるようにする。許可リスト方式（NF-SAF-04）の「許可リストそのもの」をユーザーが書き換え可能にする以上、安全性の制約を要件として明文化する。
+
+| ID | 要件 |
+|----|------|
+| F-RULE-01 | `<config_dir>/rules.json` の `overrides`（組み込みルールの上書き）で `safety` / `age_threshold_days` / `enabled` を変更できること。`rules`（配列）でユーザー定義ルールを追加できること |
+| F-RULE-02 | `needs_admin` はファイル経由で一切変更できないこと（`overrides` でも `rules` でも無視し、記述されていた場合は警告として提示すること）。ユーザー定義ルールは常に `needs_admin == false` として生成すること |
+| F-RULE-03 | ユーザー定義ルールの走査基点（`base`）は、管理者権限領域（`SystemTemp` / `WindowsUpdateCache` / `DeliveryOptimizationCache`）でも `RecycleBin` でもない、あらかじめ定めた許可リスト（`UserTemp` / `LocalAppData` / `Cache` / `Downloads` / `ThumbnailCache`）に限ること。生パスの指定は認めないこと（要件4.2） |
+| F-RULE-04 | `overrides` の `safety` はリスクを下げる方向（例: `Review` → `Safe`）には変更できないこと。ユーザー定義ルールは `safety: Safe` を指定できないこと（既定 `Review`、`Caution` まで昇格可） |
+| F-RULE-05 | ユーザー定義ルールの `match` は組み込みと同じ3種（`All` / `Extension` / `OlderThan`）のみ許可すること。正規表現・グロブ等は追加しないこと |
+| F-RULE-06 | ユーザー定義ルールは最大32件までとし、`id` は組み込みルールおよび他のユーザー定義ルールと重複しないこと。`id` / `label` / `description` には文字種・長さの制約を設け、`label` / `description` に生パスらしき文字列（`:` や `\`）を含めないこと |
+| F-RULE-07 | ファイルが存在しない場合は組み込みルールのみで動作すること。ファイルが壊れている・スキーマバージョンが未対応・個別のルール記述に誤りがある場合は、該当箇所だけを無視し、それ以外の組み込みルール・正しく書かれたルールは活かして続行すること。問題は警告として提示すること（F-HIST-05／F-AUD-05 とも異なる、3つ目の破損時方針） |
+| F-RULE-08 | `Config::user_rules_enabled`（既定 `true`）でユーザーがルール定義ファイルの読み込みそのものを無効化できること |
+
+- 実装は `core/src/ruleset.rs`（`RuleSet` / `resolve_rules`）に集約する。`preview()`（`delete.rs`）の許可リスト検証・二次防御（`Rule::is_permitted` / `Platform::requires_admin` 等）はユーザー定義ルール由来のエントリにもそのまま適用され、外部化後も NF-SAF-04 の実効性は変わらない。
+- 形式は当初案（TOML/JSON）に対し JSON を採用する。`serde_json` は既に依存にあり、TOML 追加は依存最小方針（`core/Cargo.toml` 参照）と整合しないため。将来 TOML 対応を追加する場合はデシリアライザを1つ足す加算的な変更で済む。
+
 ---
 
 ## 6. 非機能要件
@@ -299,6 +316,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | NF-SAF-03 | ドライランを既定とし、明示的な指示なく削除が発生しないこと |
 | NF-SAF-04 | 許可リスト方式を採り、未定義の領域を削除対象としないこと |
 | NF-SAF-05 | 管理者権限を要する領域は、昇格していない場合は候補から外し、一覧には「管理者権限が必要」と表示して事故を防ぐこと（A1 / Issue #40）。昇格していても、既定選択（`recommend()`）や `Safety` の格上げにより無確認で対象化してはならない |
+| NF-SAF-06 | ルール定義ファイル（`rules.json` / D4 / Issue #54）経由でも、`needs_admin` の宣言・管理者権限領域を基点とするルールの追加・`Safety` を下げる方向への変更のいずれも行えないこと。許可リスト方式（NF-SAF-04）の「許可リストそのもの」が外部ファイルで無制限に拡張できてはならない |
 
 ### 6.2 拡張性
 
@@ -436,7 +454,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | D1 | 削除ログの記録 | いつ何を削除したかの監査ログ。誤削除時の追跡に | — | 高（対応済み。`audit.rs` に `<config_dir>/deletion_log.jsonl` として実装。5.10 / Issue #51） |
 | D2 | ドライラン結果のエクスポート | JSON/CSV で削除予定を出力。レビューや自動化連携に | CLI | 中（対応済み。`export.rs` + CLI の `--format`/`--output`。5.5 F-CLI-09/10 / Issue #52） |
 | D3 | ロールバック補助 | ゴミ箱内の対象を特定・一括復元する導線 | `Platform` | 低 |
-| D4 | ルール定義の外部ファイル化 | 組み込みルールを TOML/JSON で上書き・追加可能に | — | 中 |
+| D4 | ルール定義の外部ファイル化 | 組み込みルールを TOML/JSON で上書き・追加可能に | — | 中（対応済み。`ruleset.rs` + `<config_dir>/rules.json`（JSON）。5.11 F-RULE-01〜08 / NF-SAF-06 / Issue #54） |
 
 初版依存：D2 のため CLI のドライラン出力を構造化しやすい形で保持すること。D4 のためルールをデータとして定義すること。
 

@@ -22,6 +22,7 @@ pub mod inspect;
 pub mod platform;
 pub mod recommend;
 pub mod rule;
+pub mod ruleset;
 pub mod scan;
 
 pub use audit::AuditRecord;
@@ -39,6 +40,7 @@ pub use history::{History, HistoryEntry};
 pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};
 pub use recommend::Recommendation;
 pub use rule::{MatchKind, Rule, Safety};
+pub use ruleset::{RuleSet, RuleSetIssue};
 pub use scan::{
     ScanProgress, SkipReason, apply_rule_prefs, rules_for_safeties, safety_scope, scan,
     scan_pipeline, scan_pipeline_with_progress, scan_with_progress,
@@ -72,6 +74,7 @@ mod tests {
             safety: Safety::Caution,
             age_threshold_days: Some(180),
             large_file_threshold_bytes: None,
+            is_user_defined: false,
         };
 
         let entry = ScanEntry {

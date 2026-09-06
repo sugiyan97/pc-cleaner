@@ -19,8 +19,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pc_cleaner_core::{
     AuditRecord, Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError,
-    ItemOutcome, ScanEntry, audit, breakdown, config, execute, export, history, human_size,
-    platform, preview, rules_for_safeties, safety_scope, scan_pipeline, should_relaunch,
+    ItemOutcome, RuleSet, ScanEntry, audit, breakdown, config, execute, export, history,
+    human_size, platform, preview, safety_scope, scan_pipeline, should_relaunch,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -212,12 +212,21 @@ fn load_config(platform: &dyn platform::Platform) -> Config {
 
 /// core の [`scan_pipeline`] を呼ぶだけの薄いラッパー。GUI（`gui/src/task.rs`
 /// の走査ワーカー）と同じ core 呼び出し列であることを維持すること（F-CLI-08）。
+///
+/// ルール一覧は [`RuleSet::load`] で解決する（組み込み + ルール定義ファイル
+/// の上書き・追加、D4 / Issue #54）。ファイルの検証で問題が見つかった場合は
+/// 警告として表示するが、走査自体は組み込みルールのみで続行する（F-CLI-01：
+/// CLI は実行そのものを妨げない）。
 fn scan_and_apply_prefs(
     platform: &dyn platform::Platform,
     config: &Config,
     all: bool,
 ) -> (Vec<pc_cleaner_core::Rule>, Vec<ScanEntry>) {
-    let rules = rules_for_safeties(&safety_scope(all), config, platform.is_elevated());
+    let rule_set = RuleSet::load(platform, config);
+    for issue in rule_set.issues() {
+        eprintln!("警告（ルール定義）: {}", issue.message);
+    }
+    let rules = rule_set.for_safeties(&safety_scope(all), platform.is_elevated());
     let entries = scan_pipeline(platform, &rules, config);
     (rules, entries)
 }

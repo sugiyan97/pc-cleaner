@@ -16,8 +16,12 @@ serde_json = "1"
 twox-hash = "2"
 
 [target.'cfg(windows)'.dependencies]
-# ゴミ箱送りの実装。default features には os_limited 用の chrono が含まれるが
-# 初版では trash::delete しか使わないため落とす（D3 で戻す想定）。
+# ゴミ箱送り・一覧・復元（D3 / Issue #53）の実装。default features の
+# "chrono" は Linux/Unix（非 macOS）向け os_limited 実装専用のオプション
+# 依存であり、Windows では使われない。os_limited（list/restore_all/
+# metadata）自体は target_os のみでゲートされ、feature の追加なしで
+# Windows から利用できる（D3 実装時に trash-rs のソースを確認済み）。
+# よってここでデフォルト機能を落としたままで問題ない。
 trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
 # 権限昇格（A2 / Issue #41）。必要な feature だけを明示的に有効化する。
 # - Win32_UI_Shell        : ShellExecuteExW / SHELLEXECUTEINFOW / SEE_MASK_*

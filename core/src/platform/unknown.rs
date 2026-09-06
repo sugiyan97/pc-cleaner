@@ -57,6 +57,7 @@ pub(super) use self::UnknownPlatform as PlatformImpl;
 #[cfg(not(windows))]
 mod tests {
     use super::*;
+    use crate::platform::RestoreItemOutcome;
     use std::path::Path;
 
     #[test]
@@ -75,5 +76,16 @@ mod tests {
             platform.elevate(&[]),
             Err(ElevateError::Unsupported)
         ));
+        assert!(matches!(
+            platform.list_trash(),
+            Err(PlatformError::Unsupported("list_trash"))
+        ));
+        let results = platform.restore_from_trash(&["a".to_string(), "b".to_string()]);
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|(_, outcome)| matches!(outcome, RestoreItemOutcome::Failed { .. }))
+        );
     }
 }

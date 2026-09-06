@@ -21,6 +21,7 @@ pub mod history;
 pub mod inspect;
 pub mod platform;
 pub mod recommend;
+pub mod restore;
 pub mod rule;
 pub mod ruleset;
 pub mod scan;
@@ -37,8 +38,11 @@ pub use entry::{DuplicateInfo, ScanEntry};
 pub use export::{ExportError, plan_to_csv, plan_to_json, scan_to_csv, scan_to_json};
 pub use format::human_size;
 pub use history::{History, HistoryEntry};
-pub use platform::{ElevateError, ElevateResult, KnownDir, should_relaunch};
+pub use platform::{
+    ElevateError, ElevateResult, KnownDir, RestoreItemOutcome, TrashEntry, should_relaunch,
+};
 pub use recommend::Recommendation;
+pub use restore::{RestoreCandidate, RestoreOutcome, candidates_for_run, correlate, restore};
 pub use rule::{MatchKind, Rule, Safety};
 pub use ruleset::{RuleSet, RuleSetIssue};
 pub use scan::{

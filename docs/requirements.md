@@ -73,7 +73,6 @@
 - 権限昇格フロー（UAC 昇格、昇格プロセスへの委譲）
 - macOS / Linux 向けの `Platform` 実装（`platform/unknown.rs` の最小スタブのみ用意する）
 - 経過日数しきい値のユーザー調整 UI（初版はルールにハードコードすること）
-- ロールバック補助
 - 定期実行 / スケジューラ連携、多言語対応
 
 ### 3.3 境界の明確化
@@ -113,7 +112,7 @@ pc-cleaner/
 ### 4.2 Platform trait による OS 分離方針
 
 - OS 固有の知識は `Platform` trait の裏に閉じ込めること。
-- `Platform` trait は次の 5 つの責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）。
+- `Platform` trait は次の責務を持つこと：既知ディレクトリの解決（`known_dir(KnownDir) -> Option<PathBuf>`）、ゴミ箱送り（`to_trash(&Path) -> Result<()>`）、管理者権限要否の判定（`requires_admin(&Path) -> bool`）、昇格状態の判定（`is_elevated() -> bool`）、権限昇格の実行（`elevate(&[String]) -> ElevateResult`。5.8 参照、A2 / Issue #41）、ゴミ箱の一覧・復元（`list_trash` / `restore_from_trash`。5.12 F-RST-01 / D3 / Issue #53、いずれも既定実装は未対応を返す）。
 - `KnownDir` は `UserTemp`（`%TEMP%`）、`SystemTemp`（`C:\Windows\Temp`、要管理者。A1 / Issue #40 で有効化済み）、`LocalAppData`（`%LOCALAPPDATA%`）、`Cache`（各種キャッシュ基点）、`RecycleBin`、`Downloads`（`%USERPROFILE%\Downloads`）、`WindowsUpdateCache`（`%SystemRoot%\SoftwareDistribution\Download`、要管理者。A3 / Issue #42）、`DeliveryOptimizationCache`（`%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`、要管理者。A4 / Issue #43）を持つこと。
 - ルール定義に `C:\Windows\Temp` のような生パスを記述してはならない。必ず `KnownDir` の抽象キーで記述すること。組み込みルールに限らず、ルール定義ファイル（`rules.json` / D4 / Issue #54）によるユーザー定義ルールでも同様であり、`base` は `KnownDir` の名前を指す文字列としてのみ受け付けること（5.11 F-RULE-03）。
 - `#[cfg(windows)]` は `platform/windows.rs` の中にだけ登場させ、他のファイルへ漏らしてはならない。
@@ -303,6 +302,21 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 - 実装は `core/src/ruleset.rs`（`RuleSet` / `resolve_rules`）に集約する。`preview()`（`delete.rs`）の許可リスト検証・二次防御（`Rule::is_permitted` / `Platform::requires_admin` 等）はユーザー定義ルール由来のエントリにもそのまま適用され、外部化後も NF-SAF-04 の実効性は変わらない。
 - 形式は当初案（TOML/JSON）に対し JSON を採用する。`serde_json` は既に依存にあり、TOML 追加は依存最小方針（`core/Cargo.toml` 参照）と整合しないため。将来 TOML 対応を追加する場合はデシリアライザを1つ足す加算的な変更で済む。
 
+### 5.12 ロールバック補助（D3）
+
+将来対応 D3（Issue #53）で追加。誤ってゴミ箱送りにしてしまった項目を、pc-cleaner が削除したものだと確認できる範囲で特定し、元の場所へ復元する導線を提供する。復元は削除ではないため許可リスト方式（NF-SAF-04）の対象外だが、復元によって既存ファイルを上書きしないことは引き続き守る。
+
+| ID | 要件 |
+|----|------|
+| F-RST-01 | `Platform` trait にゴミ箱の一覧（`list_trash`）と復元（`restore_from_trash`）を追加すること。両者とも既定実装は「未対応」を返し、Windows 以外では `unknown.rs` の最小スタブのまま動作すること（NF-OS-02） |
+| F-RST-02 | ゴミ箱の一覧と監査ログ（`audit.rs` / D1 / Issue #51）を、削除対象パス・削除方法（`ToTrash`）・結果（`Deleted`）で突き合わせ、「pc-cleaner がいつのどの実行（`run_id`）で削除したか」が分かる項目を識別できること。突き合わせられない項目（他アプリが削除した、または監査ログが無効化されていた期間に削除された等）も一覧には含めるが、由来不明として区別できること |
+| F-RST-03 | 復元は既定では一覧表示のみとし、明示的な指示（CLI の `--yes`、GUI の確認モーダルでの承認）があったときだけ実際に復元すること（`clean` の既定ドライランと同じ「明示しない限り状態を変えない」方針） |
+| F-RST-04 | 復元先に既に同名の項目が存在する場合は上書きせず、その項目をスキップしたことが分かる形で結果に含めること（NF-SAF-01：誤削除の救済が別の上書き事故を生んではならない）。1件のスキップ・失敗で残りの復元を止めないこと |
+| F-RST-05 | CLI に `restore` サブコマンドを設け、`--run <RUN_ID>` / `--path <PATH>` による絞り込みと、`--all-trash`（監査ログと突き合わない項目も対象に含める）を提供すること。GUI には「これまでの実績」の各行から、その実行（`run_id`）をまとめて復元する導線を設けること |
+
+- Windows 実装は `trash` クレートの `os_limited::list` / `os_limited::restore_all` を使う（`core/Cargo.toml` の依存はそのままで feature 追加は不要。D3 実装時に確認済み）。`restore_all` は衝突（`RestoreCollision` / `RestoreTwins`）を検出すると何も復元せず入力全体を返す仕様のため、`platform/windows.rs` 側で衝突項目を除いて再試行するループに閉じ込め、`core` には項目ごとの結果だけを返す（NF-MNT-03）。
+- ゴミ箱一覧と監査ログの突き合わせ（`core/src/restore.rs` の `correlate`）は純粋関数とし、時刻・I/O に依存しない（NF-MNT-02 と同じ考え方）。
+
 ---
 
 ## 6. 非機能要件
@@ -453,7 +467,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 |---|------|------|------|--------|
 | D1 | 削除ログの記録 | いつ何を削除したかの監査ログ。誤削除時の追跡に | — | 高（対応済み。`audit.rs` に `<config_dir>/deletion_log.jsonl` として実装。5.10 / Issue #51） |
 | D2 | ドライラン結果のエクスポート | JSON/CSV で削除予定を出力。レビューや自動化連携に | CLI | 中（対応済み。`export.rs` + CLI の `--format`/`--output`。5.5 F-CLI-09/10 / Issue #52） |
-| D3 | ロールバック補助 | ゴミ箱内の対象を特定・一括復元する導線 | `Platform` | 低 |
+| D3 | ロールバック補助 | ゴミ箱内の対象を特定・一括復元する導線 | `Platform` | 低（対応済み。`Platform::list_trash`/`restore_from_trash` + `restore.rs`。CLI の `restore` サブコマンド・GUI の「元に戻す」ボタン。5.12 F-RST-01〜05 / Issue #53） |
 | D4 | ルール定義の外部ファイル化 | 組み込みルールを TOML/JSON で上書き・追加可能に | — | 中（対応済み。`ruleset.rs` + `<config_dir>/rules.json`（JSON）。5.11 F-RULE-01〜08 / NF-SAF-06 / Issue #54） |
 
 初版依存：D2 のため CLI のドライラン出力を構造化しやすい形で保持すること。D4 のためルールをデータとして定義すること。

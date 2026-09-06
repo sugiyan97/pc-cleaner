@@ -6,11 +6,11 @@
 //! こと（F-CLI-08 / 9.5）。変更する場合は両方を直すこと。
 
 use eframe::egui;
-use pc_cleaner_core::platform::Platform;
+use pc_cleaner_core::platform::{Platform, RestoreItemOutcome};
 use pc_cleaner_core::{
     BucketBreakdown, CategoryBreakdown, Config, DeleteMode, DeleteOutcome, DeletePlan,
-    DeleteProgress, DeleteRequest, ElevateError, History, ItemOutcome, Rule, ScanEntry,
-    ScanProgress, SkipReason, audit, breakdown, config, history, rule,
+    DeleteProgress, DeleteRequest, ElevateError, History, ItemOutcome, RestoreOutcome, Rule,
+    ScanEntry, ScanProgress, SkipReason, audit, breakdown, config, history, rule,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,6 +35,9 @@ enum Task {
         done: usize,
         total: usize,
     },
+    /// ゴミ箱からの復元中（D3 / Issue #53）。復元は通常一瞬で終わるため、
+    /// 削除のような1件ごとの進捗通知は設けていない。
+    Restoring,
 }
 
 struct OutcomeSummary {
@@ -65,6 +68,36 @@ impl From<DeleteOutcome> for OutcomeSummary {
     }
 }
 
+/// 復元結果の表示用サマリ（D3 / Issue #53）。`OutcomeSummary` と同じ考え方で、
+/// `RestoreOutcome` の集計値をそのまま使う（GUI 側で合計を再計算しない）。
+struct RestoreOutcomeSummary {
+    restored: usize,
+    skipped: usize,
+    not_found: usize,
+    failed: usize,
+    failures: Vec<(PathBuf, String)>,
+}
+
+impl From<RestoreOutcome> for RestoreOutcomeSummary {
+    fn from(outcome: RestoreOutcome) -> Self {
+        let failures = outcome
+            .results
+            .iter()
+            .filter_map(|(path, o)| match o {
+                RestoreItemOutcome::Failed { message } => Some((path.clone(), message.clone())),
+                _ => None,
+            })
+            .collect();
+        RestoreOutcomeSummary {
+            restored: outcome.restored_count(),
+            skipped: outcome.skipped_count(),
+            not_found: outcome.not_found_count(),
+            failed: outcome.failed_count(),
+            failures,
+        }
+    }
+}
+
 /// pc-cleaner の GUI 本体。
 pub struct App {
     platform: Box<dyn Platform>,
@@ -90,6 +123,9 @@ pub struct App {
     elevated: bool,
     /// 「管理者として実行し直す」確認モーダルを表示中か。
     confirming_elevation: bool,
+    /// 「この実行を元に戻す」確認モーダルで対象にしている `run_id`
+    /// （D3 / Issue #53）。`None` なら非表示。
+    confirming_restore_run_id: Option<u64>,
 
     scope: Scope,
     rules: Vec<Rule>,
@@ -119,6 +155,8 @@ pub struct App {
     permanent_confirm_text: String,
     confirming: bool,
     last_outcome: Option<OutcomeSummary>,
+    /// 直近の復元結果（D3 / Issue #53）。
+    last_restore_outcome: Option<RestoreOutcomeSummary>,
     notices: Vec<String>,
     started: bool,
 }
@@ -184,6 +222,7 @@ impl App {
             demo,
             elevated,
             confirming_elevation: false,
+            confirming_restore_run_id: None,
             scope: Scope::SafeOnly,
             rules: Vec::new(),
             entries: Vec::new(),
@@ -200,6 +239,7 @@ impl App {
             permanent_confirm_text: String::new(),
             confirming: false,
             last_outcome: None,
+            last_restore_outcome: None,
             notices,
             started: false,
         }
@@ -277,6 +317,11 @@ impl App {
                     self.skipped.clear();
                     self.plan = None;
                     self.plan_dirty = true;
+                    keep_receiver = false;
+                }
+                WorkerMsg::RestoreDone(outcome) => {
+                    self.last_restore_outcome = Some(outcome.into());
+                    self.task = Task::Idle;
                     keep_receiver = false;
                 }
             }
@@ -388,6 +433,7 @@ impl eframe::App for App {
         self.ui_central(ctx);
         self.ui_confirm_modal(ctx);
         self.ui_elevate_modal(ctx);
+        self.ui_restore_confirm_modal(ctx);
     }
 }
 
@@ -449,6 +495,10 @@ impl App {
                         Task::Deleting { done, total } => {
                             ui.spinner();
                             ui.label(format!("削除中: {done} / {total} 件"));
+                        }
+                        Task::Restoring => {
+                            ui.spinner();
+                            ui.label("復元中…");
                         }
                         Task::Idle => {}
                     }
@@ -609,10 +659,31 @@ impl App {
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
                     for row in view::history_rows(&self.history, now_secs, 5) {
-                        ui.label(format!("{}: {}", row.when, row.summary));
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}: {}", row.when, row.summary));
+                            // run_id == 0 は #51 より前の実績で監査ログとの
+                            // 対応が無く、復元候補を特定できない
+                            // （HistoryRow::run_id のドキュメント参照）。
+                            if row.run_id != 0 && ui.small_button("🔄 元に戻す").clicked() {
+                                self.confirming_restore_run_id = Some(row.run_id);
+                            }
+                        });
                     }
                     if let Some(path) = &self.history_path {
                         ui.small(format!("保存先: {}", path.display()));
+                    }
+                    if let Some(summary) = &self.last_restore_outcome {
+                        ui.separator();
+                        ui.label(format!(
+                            "直近の復元: 成功 {} 件 / スキップ {} 件 / 対象消失 {} 件 / 失敗 {} 件",
+                            summary.restored, summary.skipped, summary.not_found, summary.failed
+                        ));
+                        for (path, message) in &summary.failures {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                format!("  {}: {message}", path.display()),
+                            );
+                        }
                     }
                 });
 
@@ -1098,6 +1169,53 @@ impl App {
             }
         } else if cancel || !open {
             self.confirming_elevation = false;
+        }
+    }
+
+    /// 「この実行を元に戻す」確認モーダル（D3 / Issue #53）。
+    ///
+    /// `ui_elevate_modal` と同じく、ボタン操作はローカル変数
+    /// （proceed / cancel）で受けてから `.show()` の後にまとめて反映する。
+    /// 復元は削除ではないため許可リスト方式（NF-SAF-04）の対象外だが、
+    /// 対象特定を誤ると意図しないファイルを動かしうるため、実行前に必ず
+    /// 確認を経由させる。復元先に既存ファイルがある場合の自動上書きは
+    /// `Platform::restore_from_trash` の実装側で常に禁止されている
+    /// （NF-SAF-01）。
+    fn ui_restore_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some(run_id) = self.confirming_restore_run_id else {
+            return;
+        };
+
+        let mut open = true;
+        let mut proceed = false;
+        let mut cancel = false;
+
+        egui::Window::new("この実行を元に戻す")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "実行 {run_id} で削除した項目のうち、ゴミ箱に残っているものを元の場所へ復元します。"
+                ));
+                ui.label("復元先に既に同名のファイルがある場合は、上書きせずスキップします。");
+                ui.horizontal(|ui| {
+                    if ui.button("復元").clicked() {
+                        proceed = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if proceed {
+            self.confirming_restore_run_id = None;
+            self.last_restore_outcome = None;
+            self.task = Task::Restoring;
+            self.rx = Some(task::spawn_restore(ctx.clone(), run_id, self.demo));
+        } else if cancel || !open {
+            self.confirming_restore_run_id = None;
         }
     }
 }

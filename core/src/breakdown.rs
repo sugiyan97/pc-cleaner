@@ -7,6 +7,7 @@
 
 use crate::delete::DeletePlan;
 use crate::entry::ScanEntry;
+use serde::Serialize;
 
 /// 内訳集計の入力単位。`ScanEntry` / `PlannedDeletion` のどちらからも
 /// 変換できるよう、集計に必要な最小限のフィールドだけを持つ。
@@ -21,7 +22,10 @@ pub struct BreakdownItem {
 }
 
 /// ルール（種類）別の内訳1件。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` はエクスポート機能（`export.rs` / Issue #52）が JSON 出力に
+/// 埋め込むために使う（出力専用のため `Deserialize` は持たせない）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CategoryBreakdown {
     /// 由来ルールの `Rule::id`。
     pub rule_id: String,
@@ -34,7 +38,9 @@ pub struct CategoryBreakdown {
 }
 
 /// サイズ帯の区分。境界は下限を含み上限を含まない（`[lower, upper)`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` は `CategoryBreakdown` と同じ理由（`export.rs` / Issue #52）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SizeBucket {
     /// 1MB 未満。
     UnderMib,
@@ -90,7 +96,9 @@ impl SizeBucket {
 }
 
 /// サイズ帯別の内訳1件。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` は `CategoryBreakdown` と同じ理由（`export.rs` / Issue #52）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BucketBreakdown {
     /// サイズ帯。
     pub bucket: SizeBucket,

@@ -2,11 +2,16 @@
 
 use crate::config::Config;
 use crate::platform::KnownDir;
+use serde::Serialize;
 
 /// ルールの安全度区分。既定の選択状態と表示方法を決定する（5.2.1）。
 ///
 /// variant の宣言順はリスクの昇順（`Safe` が最も安全）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// `Serialize` はエクスポート機能（`export.rs` / Issue #52）の交換形式の
+/// 一部。読み込みは行わない（一覧・レビュー用途の出力専用）ため
+/// `Deserialize` は持たせない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub enum Safety {
     /// 再生成される一時領域・キャッシュ。既定でチェック ON。
     Safe,

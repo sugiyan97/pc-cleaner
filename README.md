@@ -55,9 +55,13 @@ pc-cleaner clean --permanent  # 確認の上、完全削除（復旧不可）
 pc-cleaner scan --admin       # 管理者権限が必要な領域も対象にする（UAC の確認を経て管理者として起動し直す）
 pc-cleaner log                # 削除ログ（いつ何を削除したか）を表示する
 pc-cleaner log --run <RUN_ID> # 指定した実行分のみ表示する
+pc-cleaner scan --format json                       # 走査結果を JSON で標準出力へ
+pc-cleaner clean --dry-run --format csv --output plan.csv  # 削除予定を CSV でファイルへ書き出す
 ```
 
 `log` は `clean` の実行結果を記録した削除ログ（`<config_dir>/deletion_log.jsonl`）を表示するだけで、何も削除しません。誤削除が起きた際の追跡用に、実行のたびにパス付きで項目単位の記録を残します（既定で有効。無効化する場合は `config.json` の `audit_log_enabled` を `false` にするか、GUI の「削除ログを記録する」チェックボックスを外してください）。
+
+`--format json|csv` はレビューや自動化連携向けに走査結果・削除計画を機械可読な形で出力するだけで、削除の実行可否そのものは変えません（`--format json` を付けても `clean` は通常どおり削除を実行します。プレビューだけが欲しい場合は `--dry-run` と併用してください）。`--output` を省略すると標準出力に出力し、その際は自動化のパイプを壊さないよう一覧やサマリなどの人間向け出力は表示しません。
 
 `--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。昇格すると、管理者権限が必要な領域（`system_temp` = `C:\Windows\Temp`）も走査・削除の対象になります。ただし既定では選択されず（Safety: Review）、内容を確認したうえで手動で選択する必要があります。
 

@@ -108,7 +108,7 @@ pc-cleaner schedule uninstall          # 登録を削除する
 
 ファイルが存在しない・壊れている場合は組み込みルールのみで動作し、個別のルール記述に誤りがある場合もそのルールだけを無視して続行します。
 
-egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。
+egui による GUI（`gui` crate、実行バイナリ名 `pc-cleaner-gui`）も実装済みです。起動直後に Safe ルールを走査し、チェックボックス一覧・容量表示・設定保存を行います。サイドバーから表示言語を日本語/英語に切り替えられ、選択は `config.json` に保存されます。
 
 ```sh
 cargo run -p pc-cleaner-gui

@@ -2,6 +2,7 @@
 
 use crate::entry::ScanEntry;
 use crate::format::human_size;
+use crate::i18n::Lang;
 use crate::rule::{Rule, Safety};
 
 /// [`recommend`] の戻り値。
@@ -43,11 +44,14 @@ fn is_possibly_in_use(entry: &ScanEntry) -> bool {
 
 /// 経過日数を説明する文言を生成する。`entry.modified` は参照しない
 /// （F-REC-05 / NF-MNT-02、`recommend` の純粋性を保つため）。
-fn describe_age(age_days: Option<u64>) -> String {
-    match age_days {
-        Some(0) => "本日更新されています。".to_string(),
-        Some(n) => format!("最終更新から{n}日経過しています。"),
-        None => "最終更新日時は不明です。".to_string(),
+fn describe_age(age_days: Option<u64>, lang: Lang) -> String {
+    match (age_days, lang) {
+        (Some(0), Lang::Ja) => "本日更新されています。".to_string(),
+        (Some(0), Lang::En) => "Updated today.".to_string(),
+        (Some(n), Lang::Ja) => format!("最終更新から{n}日経過しています。"),
+        (Some(n), Lang::En) => format!("Last modified {n} days ago."),
+        (None, Lang::Ja) => "最終更新日時は不明です。".to_string(),
+        (None, Lang::En) => "Last modified time is unknown.".to_string(),
     }
 }
 
@@ -66,24 +70,37 @@ fn describe_age(age_days: Option<u64>) -> String {
 /// 大容量ファイル・重複ファイルの注意書き（C2 / Issue #48）は推奨可否
 /// そのものには影響しない付加情報のため、[`base_recommendation`] が決めた
 /// 推奨可否はそのまま維持し、`reason` にだけ追記する。
-pub fn recommend(entry: &ScanEntry, rule: &Rule) -> Recommendation {
-    let mut recommendation = base_recommendation(entry, rule);
+pub fn recommend(entry: &ScanEntry, rule: &Rule, lang: Lang) -> Recommendation {
+    let mut recommendation = base_recommendation(entry, rule, lang);
 
     if let Some(threshold) = rule.large_file_threshold_bytes {
         if entry.size >= threshold {
-            recommendation.reason.push_str(&format!(
-                "サイズが大きい（{}）ため、削除前に内容を確認することをおすすめします。",
-                human_size(entry.size)
-            ));
+            recommendation.reason.push_str(&match lang {
+                Lang::Ja => format!(
+                    "サイズが大きい（{}）ため、削除前に内容を確認することをおすすめします。",
+                    human_size(entry.size)
+                ),
+                Lang::En => format!(
+                    "This is large ({}), so we recommend checking the contents before \
+                    deleting.",
+                    human_size(entry.size)
+                ),
+            });
         }
     }
 
     if let Some(info) = entry.duplicate {
         if !info.is_primary {
-            recommendation.reason.push_str(&format!(
-                "同一内容のファイルが他に{}件あります。",
-                info.group_size - 1
-            ));
+            recommendation.reason.push_str(&match lang {
+                Lang::Ja => format!(
+                    "同一内容のファイルが他に{}件あります。",
+                    info.group_size - 1
+                ),
+                Lang::En => format!(
+                    "There are {} other files with identical content.",
+                    info.group_size - 1
+                ),
+            });
         }
     }
 
@@ -92,8 +109,8 @@ pub fn recommend(entry: &ScanEntry, rule: &Rule) -> Recommendation {
 
 /// `rule.needs_admin` / `rule.safety` / 経過日数・使用中判定に基づく基本の
 /// 推奨可否と理由を決める（大容量・重複ファイルの注意書きを含まない）。
-fn base_recommendation(entry: &ScanEntry, rule: &Rule) -> Recommendation {
-    let age_note = describe_age(entry.age_days);
+fn base_recommendation(entry: &ScanEntry, rule: &Rule, lang: Lang) -> Recommendation {
+    let age_note = describe_age(entry.age_days, lang);
 
     if rule.needs_admin {
         // NF-SAF-05 / A1 / Issue #40。管理者権限領域は、昇格済みであっても
@@ -104,7 +121,15 @@ fn base_recommendation(entry: &ScanEntry, rule: &Rule) -> Recommendation {
         // 最後の防御としての役割は変わらない）。
         return Recommendation::new(
             false,
-            "管理者権限が必要な領域です。内容を確認したうえで、必要な場合のみ手動で選択してください。",
+            match lang {
+                Lang::Ja => {
+                    "管理者権限が必要な領域です。内容を確認したうえで、必要な場合のみ手動で選択してください。"
+                }
+                Lang::En => {
+                    "This area requires administrator privileges. Please check the \
+                    contents and select it manually only if needed."
+                }
+            },
         );
     }
 
@@ -113,14 +138,28 @@ fn base_recommendation(entry: &ScanEntry, rule: &Rule) -> Recommendation {
             if is_possibly_in_use(entry) {
                 Recommendation::new(
                     false,
-                    format!("{age_note}使用中の可能性があるため推奨から外しました。"),
+                    match lang {
+                        Lang::Ja => {
+                            format!("{age_note}使用中の可能性があるため推奨から外しました。")
+                        }
+                        Lang::En => format!(
+                            "{age_note} Excluded from the recommendation because it may be \
+                            in use."
+                        ),
+                    },
                 )
             } else {
                 Recommendation::new(
                     true,
-                    format!(
-                        "再生成される一時領域のため、削除しても自動的に作り直されます。{age_note}"
-                    ),
+                    match lang {
+                        Lang::Ja => format!(
+                            "再生成される一時領域のため、削除しても自動的に作り直されます。{age_note}"
+                        ),
+                        Lang::En => format!(
+                            "This is a temporary area that is recreated automatically, so \
+                            deleting it is safe. {age_note}"
+                        ),
+                    },
                 )
             }
         }
@@ -128,32 +167,65 @@ fn base_recommendation(entry: &ScanEntry, rule: &Rule) -> Recommendation {
             if is_possibly_in_use(entry) {
                 Recommendation::new(
                     false,
-                    format!("{age_note}使用中の可能性があるため推奨から外しました。"),
+                    match lang {
+                        Lang::Ja => {
+                            format!("{age_note}使用中の可能性があるため推奨から外しました。")
+                        }
+                        Lang::En => format!(
+                            "{age_note} Excluded from the recommendation because it may be \
+                            in use."
+                        ),
+                    },
                 )
             } else {
                 match (entry.age_days, rule.age_threshold_days) {
                     (Some(age), Some(threshold)) if age >= threshold => Recommendation::new(
                         true,
-                        format!(
-                            "{age_note}しきい値（{threshold}日）を超えて更新されていないため推奨します。"
-                        ),
+                        match lang {
+                            Lang::Ja => format!(
+                                "{age_note}しきい値（{threshold}日）を超えて更新されていないため推奨します。"
+                            ),
+                            Lang::En => format!(
+                                "{age_note} Recommended because it has not been modified \
+                                within the threshold ({threshold} days)."
+                            ),
+                        },
                     ),
                     (Some(_), Some(threshold)) => Recommendation::new(
                         false,
-                        format!(
-                            "{age_note}しきい値（{threshold}日）未満のため、内容を確認してから選択してください。"
-                        ),
+                        match lang {
+                            Lang::Ja => format!(
+                                "{age_note}しきい値（{threshold}日）未満のため、内容を確認してから選択してください。"
+                            ),
+                            Lang::En => format!(
+                                "{age_note} This is within the threshold ({threshold} days), \
+                                so please check the contents before selecting it."
+                            ),
+                        },
                     ),
                     _ => Recommendation::new(
                         false,
-                        format!("{age_note}内容を確認してから選択してください。"),
+                        match lang {
+                            Lang::Ja => format!("{age_note}内容を確認してから選択してください。"),
+                            Lang::En => {
+                                format!("{age_note} Please check the contents before selecting it.")
+                            }
+                        },
                     ),
                 }
             }
         }
         Safety::Review => Recommendation::new(
             false,
-            format!("{age_note}中身の確認が必要な領域です。選択する前に内容を確認してください。"),
+            match lang {
+                Lang::Ja => format!(
+                    "{age_note}中身の確認が必要な領域です。選択する前に内容を確認してください。"
+                ),
+                Lang::En => format!(
+                    "{age_note} This area requires reviewing the contents. Please check \
+                    them before selecting it."
+                ),
+            },
         ),
     }
 }
@@ -200,7 +272,7 @@ mod tests {
     fn safe_temp_updated_today_is_not_recommended() {
         let r = rule(Safety::Safe, None, false);
         let e = entry(Some(0), None);
-        let rec = recommend(&e, &r);
+        let rec = recommend(&e, &r, Lang::Ja);
         assert!(!rec.recommended);
         assert!(rec.reason.contains("使用中"));
     }
@@ -209,7 +281,7 @@ mod tests {
     fn caution_log_older_than_threshold_is_recommended() {
         let r = rule(Safety::Caution, Some(180), false);
         let e = entry(Some(200), None);
-        let rec = recommend(&e, &r);
+        let rec = recommend(&e, &r, Lang::Ja);
         assert!(rec.recommended);
     }
 
@@ -218,20 +290,20 @@ mod tests {
         let e = entry(Some(30), None);
 
         let safe = rule(Safety::Safe, None, false);
-        assert!(recommend(&e, &safe).recommended);
+        assert!(recommend(&e, &safe, Lang::Ja).recommended);
 
         let caution = rule(Safety::Caution, Some(180), false);
-        assert!(!recommend(&e, &caution).recommended);
+        assert!(!recommend(&e, &caution, Lang::Ja).recommended);
 
         let review = rule(Safety::Review, Some(90), false);
-        assert!(!recommend(&e, &review).recommended);
+        assert!(!recommend(&e, &review, Lang::Ja).recommended);
     }
 
     #[test]
     fn review_is_never_auto_recommended_however_old() {
         let r = rule(Safety::Review, Some(90), false);
         let e = entry(Some(9999), None);
-        assert!(!recommend(&e, &r).recommended);
+        assert!(!recommend(&e, &r, Lang::Ja).recommended);
     }
 
     #[test]
@@ -239,7 +311,7 @@ mod tests {
         for safety in [Safety::Safe, Safety::Caution, Safety::Review] {
             let r = rule(safety, Some(1), true);
             let e = entry(Some(9999), None);
-            let rec = recommend(&e, &r);
+            let rec = recommend(&e, &r, Lang::Ja);
             assert!(!rec.recommended);
             assert!(rec.reason.contains("管理者権限"));
             assert!(
@@ -265,7 +337,7 @@ mod tests {
                 for age_days in ages {
                     let r = rule(safety, Some(90), needs_admin);
                     let e = entry(age_days, None);
-                    assert!(!recommend(&e, &r).reason.is_empty());
+                    assert!(!recommend(&e, &r, Lang::Ja).reason.is_empty());
                 }
             }
         }
@@ -278,8 +350,14 @@ mod tests {
         let with_epoch = entry(Some(200), Some(SystemTime::UNIX_EPOCH));
         let with_now = entry(Some(200), Some(SystemTime::now()));
 
-        assert_eq!(recommend(&base, &r), recommend(&with_epoch, &r));
-        assert_eq!(recommend(&base, &r), recommend(&with_now, &r));
+        assert_eq!(
+            recommend(&base, &r, Lang::Ja),
+            recommend(&with_epoch, &r, Lang::Ja)
+        );
+        assert_eq!(
+            recommend(&base, &r, Lang::Ja),
+            recommend(&with_now, &r, Lang::Ja)
+        );
     }
 
     // ---- C2 / Issue #48: 使用中判定（entry.in_use）----
@@ -292,7 +370,7 @@ mod tests {
         let mut e = entry(Some(100), None);
         e.in_use = Some(true);
 
-        let rec = recommend(&e, &r);
+        let rec = recommend(&e, &r, Lang::Ja);
         assert!(!rec.recommended);
         assert!(rec.reason.contains("使用中"));
     }
@@ -305,7 +383,7 @@ mod tests {
         let mut e = entry(Some(0), None);
         e.in_use = None;
 
-        let rec = recommend(&e, &r);
+        let rec = recommend(&e, &r, Lang::Ja);
         assert!(!rec.recommended, "in_use 不明のときは age_days==0 に倒す");
         assert!(rec.reason.contains("使用中"));
     }
@@ -318,7 +396,7 @@ mod tests {
         let mut e = entry(Some(0), None);
         e.in_use = Some(false);
 
-        let rec = recommend(&e, &r);
+        let rec = recommend(&e, &r, Lang::Ja);
         assert!(rec.recommended);
         assert!(!rec.reason.contains("使用中"));
     }
@@ -332,13 +410,13 @@ mod tests {
 
         let mut small = entry(Some(30), None);
         small.size = 999;
-        let small_rec = recommend(&small, &r);
+        let small_rec = recommend(&small, &r, Lang::Ja);
         assert!(small_rec.recommended);
         assert!(!small_rec.reason.contains("サイズが大きい"));
 
         let mut large = entry(Some(30), None);
         large.size = 1_000;
-        let large_rec = recommend(&large, &r);
+        let large_rec = recommend(&large, &r, Lang::Ja);
         assert!(
             large_rec.recommended,
             "サイズ注意書きは推奨可否を変えない（情報提供のみ）"
@@ -360,7 +438,7 @@ mod tests {
             group_size: 3,
             is_primary: true,
         });
-        let primary_rec = recommend(&primary, &r);
+        let primary_rec = recommend(&primary, &r, Lang::Ja);
         assert!(!primary_rec.reason.contains("同一内容のファイルが他に"));
 
         let mut secondary = entry(Some(30), None);
@@ -369,12 +447,24 @@ mod tests {
             group_size: 3,
             is_primary: false,
         });
-        let secondary_rec = recommend(&secondary, &r);
+        let secondary_rec = recommend(&secondary, &r, Lang::Ja);
         assert!(secondary_rec.recommended, "重複は推奨可否を変えない");
         assert!(
             secondary_rec
                 .reason
                 .contains("同一内容のファイルが他に2件あります")
         );
+    }
+
+    #[test]
+    fn en_lang_produces_a_non_empty_ascii_reason() {
+        // F-I18N-01 / Issue #58: 英語モードでも reason は空にならず、日本語
+        // 混じりにならないことの簡単なスモークテスト。
+        let r = rule(Safety::Caution, Some(180), false);
+        let e = entry(Some(200), None);
+        let rec = recommend(&e, &r, Lang::En);
+        assert!(rec.recommended);
+        assert!(!rec.reason.is_empty());
+        assert!(rec.reason.is_ascii());
     }
 }

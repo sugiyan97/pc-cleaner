@@ -1,5 +1,6 @@
 //! ユーザー設定の保存・読込（F-CFG-01〜05）。
 
+use crate::i18n::Lang;
 use crate::platform::Platform;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -65,6 +66,13 @@ pub struct Config {
     /// 存在自体がオプトインであり、既定 `true` でも安全側に倒れている）ため、
     /// 本フィールドは「ファイルがあっても無視したい」場合のキルスイッチ。
     pub user_rules_enabled: bool,
+    /// GUI/CLI の表示言語（日本語 / 英語）。既定は `Lang::Ja`（E4 / Issue #58）。
+    ///
+    /// CLI は本フィールドを参照しない（CLI の出力は日本語のみ。5.14 参照）。
+    /// GUI のみが読み替えの対象であり、切り替えるとルール一覧（`rule::builtin_rules`）
+    /// ・推奨理由（`recommend::recommend`）・GUI 表示（`gui/src/view.rs` /
+    /// `gui/src/app.rs`）に反映される。
+    pub lang: Lang,
 }
 
 /// 既定の大容量ファイルしきい値（1 GiB）。
@@ -81,6 +89,7 @@ impl Default for Config {
             detect_duplicates: false,
             audit_log_enabled: true,
             user_rules_enabled: true,
+            lang: Lang::Ja,
         }
     }
 }
@@ -165,6 +174,7 @@ mod tests {
             config.user_rules_enabled,
             "ファイルの存在自体がオプトインのため既定 true"
         );
+        assert_eq!(config.lang, Lang::Ja, "F-I18N-01: 既定言語は日本語");
     }
 
     #[test]
@@ -264,6 +274,25 @@ mod tests {
         assert!(
             config.user_rules_enabled,
             "コンテナ属性 #[serde(default)] により既定 true で補われる"
+        );
+    }
+
+    #[test]
+    fn load_accepts_config_written_before_lang() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // lang が存在しなかった頃の config.json を模す。
+        fs::write(
+            &path,
+            r#"{"rule_prefs":{},"use_trash":true,"dry_run_default":true}"#,
+        )
+        .unwrap();
+
+        let config = load(&path);
+        assert_eq!(
+            config.lang,
+            Lang::Ja,
+            "コンテナ属性 #[serde(default)] により既定 Ja で補われる"
         );
     }
 

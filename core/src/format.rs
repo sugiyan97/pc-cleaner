@@ -2,6 +2,8 @@
 //! ない（F-CLI-01 / F-GUI-07）。CLI/GUI が個別に同じ実装を持つと将来ズレる
 //! ため、ここに集約する。
 
+use crate::i18n::Lang;
+
 /// バイト数を読みやすい単位（B/KB/MB/GB/TB）に変換する。
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -27,25 +29,46 @@ pub fn human_size(bytes: u64) -> String {
 /// 近似する。用途は履歴一覧の目安表示であり、正確な暦日は要求されない。
 ///
 /// 区分（`seconds_ago` を 86400 で割った日数 `days` による）：
-/// - `days == 0` → "本日"
-/// - `1..=6` → "N日前"
-/// - `7..=29` → "N週間前"（`days / 7`）
-/// - `30..=364` → "Nか月前"（`days / 30`）
-/// - `365..` → "N年前"（`days / 365`）
-pub fn relative_days(seconds_ago: u64) -> String {
+/// - `days == 0` → "本日" / "Today"
+/// - `1..=6` → "N日前" / "N days ago"
+/// - `7..=29` → "N週間前" / "N weeks ago"（`days / 7`）
+/// - `30..=364` → "Nか月前" / "N months ago"（`days / 30`）
+/// - `365..` → "N年前" / "N years ago"（`days / 365`）
+///
+/// `lang` は表示言語（E4 / Issue #58）。英語側も日本語側と同じく単数/複数の
+/// 使い分けはしない（意図的な最小主義。日本語側も "1日前" を特別扱いしない
+/// のと同じ方針）。
+pub fn relative_days(seconds_ago: u64, lang: Lang) -> String {
     const SECS_PER_DAY: u64 = 24 * 60 * 60;
     let days = seconds_ago / SECS_PER_DAY;
 
-    if days == 0 {
-        "本日".to_string()
-    } else if days < 7 {
-        format!("{days}日前")
-    } else if days < 30 {
-        format!("{}週間前", days / 7)
-    } else if days < 365 {
-        format!("{}か月前", days / 30)
-    } else {
-        format!("{}年前", days / 365)
+    match lang {
+        Lang::Ja => {
+            if days == 0 {
+                "本日".to_string()
+            } else if days < 7 {
+                format!("{days}日前")
+            } else if days < 30 {
+                format!("{}週間前", days / 7)
+            } else if days < 365 {
+                format!("{}か月前", days / 30)
+            } else {
+                format!("{}年前", days / 365)
+            }
+        }
+        Lang::En => {
+            if days == 0 {
+                "Today".to_string()
+            } else if days < 7 {
+                format!("{days} days ago")
+            } else if days < 30 {
+                format!("{} weeks ago", days / 7)
+            } else if days < 365 {
+                format!("{} months ago", days / 30)
+            } else {
+                format!("{} years ago", days / 365)
+            }
+        }
     }
 }
 
@@ -65,12 +88,20 @@ mod tests {
     #[test]
     fn relative_days_formats_common_cases() {
         const DAY: u64 = 24 * 60 * 60;
-        assert_eq!(relative_days(0), "本日");
-        assert_eq!(relative_days(DAY - 1), "本日");
-        assert_eq!(relative_days(DAY), "1日前");
-        assert_eq!(relative_days(3 * DAY), "3日前");
-        assert_eq!(relative_days(10 * DAY), "1週間前");
-        assert_eq!(relative_days(45 * DAY), "1か月前");
-        assert_eq!(relative_days(400 * DAY), "1年前");
+        assert_eq!(relative_days(0, Lang::Ja), "本日");
+        assert_eq!(relative_days(DAY - 1, Lang::Ja), "本日");
+        assert_eq!(relative_days(DAY, Lang::Ja), "1日前");
+        assert_eq!(relative_days(3 * DAY, Lang::Ja), "3日前");
+        assert_eq!(relative_days(10 * DAY, Lang::Ja), "1週間前");
+        assert_eq!(relative_days(45 * DAY, Lang::Ja), "1か月前");
+        assert_eq!(relative_days(400 * DAY, Lang::Ja), "1年前");
+    }
+
+    #[test]
+    fn relative_days_formats_common_cases_in_english() {
+        const DAY: u64 = 24 * 60 * 60;
+        assert_eq!(relative_days(0, Lang::En), "Today");
+        assert_eq!(relative_days(3 * DAY, Lang::En), "3 days ago");
+        assert_eq!(relative_days(10 * DAY, Lang::En), "1 weeks ago");
     }
 }

@@ -54,7 +54,7 @@ pub fn make_platform(demo: bool) -> Box<dyn Platform> {
         }
         #[cfg(not(feature = "demo"))]
         {
-            eprintln!("--demo は `--features demo` でビルドした場合のみ有効です。");
+            eprintln!("--demo is only effective when built with `--features demo`.");
         }
     }
     platform::current()

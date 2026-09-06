@@ -317,6 +317,21 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 - Windows 実装は `trash` クレートの `os_limited::list` / `os_limited::restore_all` を使う（`core/Cargo.toml` の依存はそのままで feature 追加は不要。D3 実装時に確認済み）。`restore_all` は衝突（`RestoreCollision` / `RestoreTwins`）を検出すると何も復元せず入力全体を返す仕様のため、`platform/windows.rs` 側で衝突項目を除いて再試行するループに閉じ込め、`core` には項目ごとの結果だけを返す（NF-MNT-03）。
 - ゴミ箱一覧と監査ログの突き合わせ（`core/src/restore.rs` の `correlate`）は純粋関数とし、時刻・I/O に依存しない（NF-MNT-02 と同じ考え方）。
 
+### 5.13 定期実行 / スケジューラ連携（E2）
+
+将来対応 E2（Issue #56）で追加。Windows のタスクスケジューラへ登録し、無人の状態で定期的に `Safe` ルールのみをゴミ箱経由で自動掃除できるようにする。無人実行は確認画面を挟めないため、対象範囲・削除方式を安全側に固定することを要件の中心に置く。
+
+| ID | 要件 |
+|----|------|
+| F-SCHED-01 | `Platform` trait にタスクの登録（`install_scheduled_task`）・削除（`uninstall_scheduled_task`）・登録状況の確認（`scheduled_task_status`）を追加すること。いずれも既定実装は「未対応」を返し、Windows 以外では `unknown.rs` の最小スタブのまま動作すること（NF-OS-02） |
+| F-SCHED-02 | 登録するタスクの実行内容は常に `pc-cleaner clean --scheduled`（Safe ルールのみ・ゴミ箱経由）に固定すること。スケジュール指定（`ScheduleSpec`）は頻度・実行時刻のみを持ち、対象範囲（`--all` 相当）・削除方式（`--permanent` 相当）・管理者権限（`--admin` 相当）を変える手段を一切持たないこと（NF-SAF-05：無人実行が管理者領域や完全削除に触れる経路を型で塞ぐ） |
+| F-SCHED-03 | CLI の `clean` に `--scheduled` フラグを設けること。`--scheduled` は `--all` / `--permanent` / `--admin` のいずれとも同時指定できないこと（clap のパース時点でエラーにし、登録済みタスクのコマンドラインが誤って書き換えられた場合にも安全側に倒すこと） |
+| F-SCHED-04 | タスクの登録には管理者権限を要求しないこと（`schtasks /RL LIMITED` 相当） |
+| F-SCHED-05 | CLI に `schedule install [--weekly] [--time HH:MM] [--dry-run]` / `schedule uninstall` / `schedule status` サブコマンドを設けること。`install --dry-run` は実際には登録せず、登録内容のみを表示すること |
+
+- Windows 実装は `schtasks.exe` を `std::process::Command` で呼び出す方式を採る（`windows` クレートの COM API は使わない。`#![deny(unsafe_code)]` 方針と、`/SC` 等の引数がロケールに関わらず解釈される安定性を優先するため）。引数の組み立て（`build_create_args` 等）は `quote_arg` / `join_args`（A2 / Issue #41）と同じく純粋関数とし、macOS 上でも単体テストできる形にする。
+- 頻度が `Weekly` の場合、曜日は日曜日固定とする（選択式にする拡張は将来対応とする）。
+
 ---
 
 ## 6. 非機能要件
@@ -477,7 +492,7 @@ GUI は第3段階の成果物とし、egui を用いて実装すること。
 | # | 項目 | 内容 | 依存 | 優先度 |
 |---|------|------|------|--------|
 | E1 | GUI（egui）本実装 | チェックボックス一覧・容量表示・設定保存 | core 完成 | 高（対応済み。5.6 F-GUI-01〜08。Issue #11／Issue #55） |
-| E2 | 定期実行 / スケジューラ連携 | タスクスケジューラ登録、Safe のみ自動掃除 | CLI | 中 |
+| E2 | 定期実行 / スケジューラ連携 | タスクスケジューラ登録、Safe のみ自動掃除 | CLI | 中（対応済み。5.13 F-SCHED-01〜05。Issue #56） |
 | E3 | 単一バイナリ配布 | リリースビルド、署名、インストーラ不要の配布 | — | 中 |
 | E4 | 多言語対応 | 日本語/英語のUI切り替え | GUI | 低 |
 

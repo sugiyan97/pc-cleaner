@@ -14,6 +14,7 @@
 mod unknown;
 mod windows;
 
+use crate::schedule::{ScheduleSpec, ScheduleStatus};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -89,6 +90,10 @@ pub enum PlatformError {
     Io(std::io::Error),
     /// ゴミ箱送りの実装（`trash` クレート等）が返したエラーメッセージ。
     Trash(String),
+    /// 外部コマンド（`schtasks.exe` 等）の起動・実行に失敗した際のメッセージ
+    /// （E2 / Issue #56）。`Trash` と同じ方針で、実装詳細（終了コード・
+    /// stderr 等）は文字列化してから `core` の公開 API に載せる。
+    Command(String),
     /// この OS ではサポートされない操作（`unknown.rs` スタブ用、NF-OS-02）。
     Unsupported(&'static str),
 }
@@ -98,6 +103,7 @@ impl fmt::Display for PlatformError {
         match self {
             PlatformError::Io(e) => write!(f, "I/O エラー: {e}"),
             PlatformError::Trash(msg) => write!(f, "ゴミ箱送りに失敗しました: {msg}"),
+            PlatformError::Command(msg) => write!(f, "コマンドの実行に失敗しました: {msg}"),
             PlatformError::Unsupported(op) => write!(f, "この OS では未対応の操作です: {op}"),
         }
     }
@@ -294,6 +300,37 @@ pub trait Platform {
                 )
             })
             .collect()
+    }
+
+    /// 定期実行（タスクスケジューラ連携）をこの OS へ登録する（E2 / Issue #56）。
+    ///
+    /// 登録するタスクは常に `pc-cleaner clean --scheduled`（Safe ルールの
+    /// みを対象にした、ゴミ箱経由の無人実行）に固定する。`spec` は頻度・
+    /// 実行時刻のみを持ち、対象範囲や削除方式を変える手段を持たない
+    /// （[`crate::schedule::ScheduleSpec`] のドキュメント参照）。管理者権限は
+    /// 要求しない。
+    ///
+    /// 既定実装は未対応を返す（`unknown.rs` スタブ用、NF-OS-02）。
+    fn install_scheduled_task(&self, spec: ScheduleSpec) -> Result<()> {
+        let _ = spec;
+        Err(PlatformError::Unsupported("install_scheduled_task"))
+    }
+
+    /// 登録済みの定期実行タスクを削除する（E2 / Issue #56）。
+    ///
+    /// タスクが元々登録されていない場合もエラーにはしない（削除の意図は
+    /// 「登録されていない状態にすること」であり、既にその状態であれば目的は
+    /// 達成されているため）。既定実装は未対応を返す（`unknown.rs` スタブ用、
+    /// NF-OS-02）。
+    fn uninstall_scheduled_task(&self) -> Result<()> {
+        Err(PlatformError::Unsupported("uninstall_scheduled_task"))
+    }
+
+    /// 定期実行タスクの登録状況を確認する（E2 / Issue #56）。
+    ///
+    /// 既定実装は未対応を返す（`unknown.rs` スタブ用、NF-OS-02）。
+    fn scheduled_task_status(&self) -> Result<ScheduleStatus> {
+        Err(PlatformError::Unsupported("scheduled_task_status"))
     }
 }
 

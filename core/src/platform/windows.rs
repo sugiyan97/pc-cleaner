@@ -241,6 +241,83 @@ fn is_win32_error(hresult: i32, code: u32) -> bool {
     (hresult as u32) == (0x8007_0000 | (code & 0xFFFF))
 }
 
+/// 定期実行タスクの登録名（タスクスケジューラのフォルダ区切り込み。
+/// E2 / Issue #56）。`\` 始まりでルートフォルダ直下ではなく専用フォルダに
+/// 収める（`schtasks` の既定であるルート直下だと、他アプリのタスクと並んで
+/// 見分けづらくなるため）。
+const SCHEDULED_TASK_NAME: &str = r"\pc-cleaner\AutoClean";
+
+/// `schtasks /Create` へ渡す引数列を組み立てる（純粋関数、単体テスト可能。
+/// E2 / Issue #56）。
+///
+/// 登録するタスクは常に `<exe_path> clean --scheduled` に固定する
+/// （呼び出し元は `ScheduleSpec` 以外の情報を混ぜ込まないこと。
+/// [`crate::schedule::ScheduleSpec`] のドキュメント参照）。`/RL LIMITED` で
+/// 管理者権限を要求しない設定にし、`/F` で既存タスクの上書き登録を許す
+/// （2重登録エラーを避けるため。`install` を何度実行しても同じ内容に
+/// 収束する冪等な操作にする）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn build_create_args(spec: &crate::schedule::ScheduleSpec, exe_path: &Path) -> Vec<String> {
+    let run_command = join_args(&[
+        exe_path.display().to_string(),
+        "clean".to_string(),
+        "--scheduled".to_string(),
+    ]);
+
+    let mut args = vec![
+        "/Create".to_string(),
+        "/TN".to_string(),
+        SCHEDULED_TASK_NAME.to_string(),
+        "/TR".to_string(),
+        run_command,
+        "/ST".to_string(),
+        spec.start_time(),
+        "/RL".to_string(),
+        "LIMITED".to_string(),
+        "/F".to_string(),
+        "/SC".to_string(),
+    ];
+    match spec.frequency {
+        crate::schedule::ScheduleFrequency::Daily => {
+            args.push("DAILY".to_string());
+        }
+        crate::schedule::ScheduleFrequency::Weekly => {
+            // 曜日は日曜日固定（選択式にする拡張は将来対応とする。
+            // schedule.rs の ScheduleFrequency::Weekly のドキュメント参照）。
+            args.push("WEEKLY".to_string());
+            args.push("/D".to_string());
+            args.push("SUN".to_string());
+        }
+    }
+    args
+}
+
+/// `schtasks /Delete` へ渡す引数列を組み立てる（純粋関数）。`/F` により
+/// 確認プロンプトを省略する（CLI からの呼び出しは既に利用者の明示的な
+/// 操作であり、二重に確認する必要はない）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn build_delete_args() -> Vec<String> {
+    vec![
+        "/Delete".to_string(),
+        "/TN".to_string(),
+        SCHEDULED_TASK_NAME.to_string(),
+        "/F".to_string(),
+    ]
+}
+
+/// `schtasks /Query` へ渡す引数列を組み立てる（純粋関数）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn build_query_args() -> Vec<String> {
+    vec![
+        "/Query".to_string(),
+        "/TN".to_string(),
+        SCHEDULED_TASK_NAME.to_string(),
+        "/FO".to_string(),
+        "LIST".to_string(),
+        "/V".to_string(),
+    ]
+}
+
 // ---- OS バインディング層（Windows のみ）----
 
 /// `trash::delete` が返す `trash::Error` を、ユーザーが読める日本語の文へ翻訳する。
@@ -407,6 +484,72 @@ fn restore_trash_items(ids: &[String]) -> Vec<(String, RestoreItemOutcome)> {
 #[cfg(windows)]
 fn elevate_error_message(err: &windows::core::Error) -> String {
     format!("{} (code {})", err.message(), err.code().0)
+}
+
+/// `schtasks.exe` を `args` で実行し、終了コードで成否を判定する
+/// （E2 / Issue #56）。標準出力・標準エラーの中身（実装依存の詳細）は
+/// `schtasks_error_message` で1行の文字列へまとめてから
+/// `PlatformError::Command` に渡す（`trash_error_message` / `elevate_error_message`
+/// と同じ「実装詳細を `core` の公開 API に漏らさない」方針）。
+#[cfg(windows)]
+fn run_schtasks(args: &[String]) -> Result<()> {
+    let output = std::process::Command::new("schtasks")
+        .args(args)
+        .output()
+        .map_err(|e| PlatformError::Command(e.to_string()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(PlatformError::Command(schtasks_error_message(&output)))
+    }
+}
+
+/// `schtasks.exe` の失敗出力を1行のメッセージへまとめる。`stderr` が空の
+/// 場合は `stdout` を使う（`schtasks` は失敗時のメッセージを `stdout` 側に
+/// 出すことがある）。
+#[cfg(windows)]
+fn schtasks_error_message(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        format!(
+            "schtasks が終了コード {:?} を返しました。",
+            output.status.code()
+        )
+    } else {
+        first_line.to_string()
+    }
+}
+
+/// 定期実行タスクの登録状況を取得する（E2 / Issue #56）。
+///
+/// `schtasks /Query` は指定したタスクが存在しない場合、非ゼロ終了コードを
+/// 返す（これは環境異常ではなく「未登録」という通常の結果である）。この
+/// 場合はエラーにせず `installed: false` として返す。それ以外の理由で
+/// `schtasks` 自体が起動できない場合は `Err` を返す。
+#[cfg(windows)]
+fn query_schtasks_status() -> Result<crate::schedule::ScheduleStatus> {
+    let output = std::process::Command::new("schtasks")
+        .args(build_query_args())
+        .output()
+        .map_err(|e| PlatformError::Command(e.to_string()))?;
+    if !output.status.success() {
+        return Ok(crate::schedule::ScheduleStatus {
+            installed: false,
+            detail: None,
+        });
+    }
+    let detail = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(crate::schedule::ScheduleStatus {
+        installed: true,
+        detail: (!detail.is_empty()).then_some(detail),
+    })
 }
 
 /// UTF-16 の NUL 終端バッファへ変換する。`PCWSTR` はこのバッファへの
@@ -578,6 +721,19 @@ impl Platform for WindowsPlatform {
 
     fn restore_from_trash(&self, ids: &[String]) -> Vec<(String, RestoreItemOutcome)> {
         restore_trash_items(ids)
+    }
+
+    fn install_scheduled_task(&self, spec: crate::schedule::ScheduleSpec) -> Result<()> {
+        let exe = std::env::current_exe()?;
+        run_schtasks(&build_create_args(&spec, &exe))
+    }
+
+    fn uninstall_scheduled_task(&self) -> Result<()> {
+        run_schtasks(&build_delete_args())
+    }
+
+    fn scheduled_task_status(&self) -> Result<crate::schedule::ScheduleStatus> {
+        query_schtasks_status()
     }
 }
 
@@ -763,6 +919,85 @@ mod tests {
         // ERROR_CANCELLED (1223 = 0x4C7) -> 0x800704C7。
         assert!(is_win32_error(0x800704C7u32 as i32, 1223));
         assert!(!is_win32_error(0x80070005u32 as i32, 1223));
+    }
+
+    // ---- 定期実行 / スケジューラ連携（E2 / Issue #56）の純粋層 ----
+
+    fn daily_spec() -> crate::schedule::ScheduleSpec {
+        crate::schedule::ScheduleSpec {
+            frequency: crate::schedule::ScheduleFrequency::Daily,
+            hour: 3,
+            minute: 0,
+        }
+    }
+
+    #[test]
+    fn build_create_args_uses_daily_schedule_and_limited_run_level() {
+        let args = build_create_args(&daily_spec(), Path::new(r"C:\Program Files\pc-cleaner.exe"));
+        assert_eq!(args[0], "/Create");
+        assert_eq!(args[1], "/TN");
+        assert_eq!(args[2], SCHEDULED_TASK_NAME);
+        assert_eq!(args[3], "/TR");
+        assert_eq!(
+            args[4],
+            "\"C:\\Program Files\\pc-cleaner.exe\" clean --scheduled"
+        );
+        assert_eq!(args[5], "/ST");
+        assert_eq!(args[6], "03:00");
+        assert!(args.contains(&"/RL".to_string()));
+        assert!(args.contains(&"LIMITED".to_string()));
+        assert!(args.contains(&"/F".to_string()));
+        assert!(args.contains(&"/SC".to_string()));
+        assert!(args.contains(&"DAILY".to_string()));
+        assert!(!args.contains(&"/D".to_string()));
+    }
+
+    #[test]
+    fn build_create_args_weekly_schedule_pins_sunday() {
+        let spec = crate::schedule::ScheduleSpec {
+            frequency: crate::schedule::ScheduleFrequency::Weekly,
+            hour: 9,
+            minute: 30,
+        };
+        let args = build_create_args(&spec, Path::new(r"C:\pc-cleaner.exe"));
+        assert!(args.contains(&"WEEKLY".to_string()));
+        assert!(args.contains(&"/D".to_string()));
+        assert!(args.contains(&"SUN".to_string()));
+        assert!(args.contains(&"09:30".to_string()));
+    }
+
+    #[test]
+    fn build_create_args_never_requests_admin_or_full_scope() {
+        // NF-SAF-05: 無人実行が管理者領域・完全削除・Caution/Review へ触れる
+        // 経路が無いことを、生成される引数列の形からも固定する。
+        let args = build_create_args(&daily_spec(), Path::new(r"C:\pc-cleaner.exe"));
+        let joined = args.join(" ");
+        assert!(joined.contains("clean --scheduled"));
+        assert!(!joined.contains("--admin"));
+        assert!(!joined.contains("--permanent"));
+        assert!(!joined.contains("--all"));
+    }
+
+    #[test]
+    fn build_delete_args_targets_the_registered_task_name() {
+        let args = build_delete_args();
+        assert_eq!(
+            args,
+            vec![
+                "/Delete".to_string(),
+                "/TN".to_string(),
+                SCHEDULED_TASK_NAME.to_string(),
+                "/F".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_query_args_targets_the_registered_task_name() {
+        let args = build_query_args();
+        assert_eq!(args[0], "/Query");
+        assert_eq!(args[1], "/TN");
+        assert_eq!(args[2], SCHEDULED_TASK_NAME);
     }
 }
 

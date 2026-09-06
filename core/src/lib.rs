@@ -25,6 +25,7 @@ pub mod restore;
 pub mod rule;
 pub mod ruleset;
 pub mod scan;
+pub mod schedule;
 
 pub use audit::AuditRecord;
 pub use breakdown::{BreakdownItem, BucketBreakdown, CategoryBreakdown, SizeBucket};
@@ -49,6 +50,7 @@ pub use scan::{
     ScanProgress, SkipReason, apply_rule_prefs, rules_for_safeties, safety_scope, scan,
     scan_pipeline, scan_pipeline_with_progress, scan_with_progress,
 };
+pub use schedule::{ScheduleFrequency, ScheduleSpec, ScheduleStatus};
 
 #[cfg(test)]
 mod tests {

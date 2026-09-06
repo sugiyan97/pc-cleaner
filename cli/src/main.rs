@@ -19,9 +19,9 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pc_cleaner_core::{
     AuditRecord, Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError,
-    ItemOutcome, RestoreCandidate, RestoreItemOutcome, RuleSet, ScanEntry, audit, breakdown,
-    config, execute, export, history, human_size, platform, preview, restore, safety_scope,
-    scan_pipeline, should_relaunch,
+    ItemOutcome, RestoreCandidate, RestoreItemOutcome, RuleSet, ScanEntry, ScheduleFrequency,
+    ScheduleSpec, audit, breakdown, config, execute, export, history, human_size, platform,
+    preview, restore, safety_scope, scan_pipeline, should_relaunch,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -61,6 +61,10 @@ enum Command {
     Log(LogArgs),
     /// ゴミ箱からの復元を補助する（D3 / Issue #53）。既定では一覧表示のみ
     Restore(RestoreArgs),
+    /// 定期実行（タスクスケジューラ連携）を管理する（E2 / Issue #56）。
+    /// 登録される内容は常に `clean --scheduled`（Safe ルールのみ・ゴミ箱
+    /// 経由の無人実行）に固定される
+    Schedule(ScheduleArgs),
 }
 
 #[derive(Args)]
@@ -130,6 +134,14 @@ struct CleanArgs {
     /// 管理者として起動し直し、現在のプロセスは終了する（A2 / Issue #41）。
     #[arg(long)]
     admin: bool,
+    /// タスクスケジューラからの無人実行であることを示す（E2 / Issue #56。
+    /// `pc-cleaner schedule install` が登録するタスクはこのフラグ付きで
+    /// `clean` を呼ぶ）。「Safe のみ自動掃除」の安全性を保つため、
+    /// `--all` / `--permanent` / `--admin` とは同時指定できない
+    /// （NF-SAF-05：無人実行が管理者領域や完全削除に触れる経路を CLI の
+    /// パース時点で塞ぐ）。
+    #[arg(long, conflicts_with_all = ["all", "permanent", "admin"])]
+    scheduled: bool,
     /// 出力形式（D2 / Issue #52）。`json` / `csv` を指定すると、削除計画
     /// （プレビュー）を機械可読な形でエクスポートする。削除の挙動そのもの
     /// は変えない：`--format json` 単体で `clean` を実行すれば通常どおり
@@ -142,6 +154,33 @@ struct CleanArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct ScheduleArgs {
+    #[command(subcommand)]
+    action: ScheduleAction,
+}
+
+#[derive(Subcommand)]
+enum ScheduleAction {
+    /// タスクスケジューラへ登録する（Safe ルールのみ・ゴミ箱経由の無人実行、
+    /// 管理者権限は要求しない）。既に登録済みの場合は内容を更新する
+    Install {
+        /// 毎週日曜日に実行する（既定は毎日）
+        #[arg(long)]
+        weekly: bool,
+        /// 実行時刻（`HH:MM`、ローカルタイム。既定は `03:00`）
+        #[arg(long, default_value = "03:00")]
+        time: String,
+        /// 実際には登録せず、登録内容だけ表示する
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 登録済みのタスクを削除する
+    Uninstall,
+    /// 登録状況を表示する（何も変更しない）
+    Status,
+}
+
 impl Command {
     /// `--admin` が指定されたか（Scan/Clean 共通）。
     fn admin_requested(&self) -> bool {
@@ -150,6 +189,7 @@ impl Command {
             Command::Clean(args) => args.admin,
             Command::Log(_) => false,
             Command::Restore(_) => false,
+            Command::Schedule(_) => false,
         }
     }
 }
@@ -182,6 +222,7 @@ fn main() -> ExitCode {
         Command::Clean(args) => run_clean(platform.as_ref(), &config, args),
         Command::Log(args) => run_log(platform.as_ref(), args),
         Command::Restore(args) => run_restore(platform.as_ref(), args),
+        Command::Schedule(args) => run_schedule(platform.as_ref(), args),
     }
 }
 
@@ -279,6 +320,15 @@ fn run_scan(platform: &dyn platform::Platform, config: &Config, args: ScopeArgs)
 }
 
 fn run_clean(platform: &dyn platform::Platform, config: &Config, args: CleanArgs) -> ExitCode {
+    if args.scheduled && args.format == OutputFormat::Text {
+        // タスクスケジューラからの無人実行であることをログ上で分かるように
+        // しておく（E2 / Issue #56）。`--all`/`--permanent`/`--admin` は
+        // `--scheduled` と同時指定できない（clap の conflicts_with_all）ため、
+        // ここに到達する時点で Safe のみ・ゴミ箱経由が保証されている。
+        println!(
+            "定期実行（タスクスケジューラ）による自動掃除を開始します（Safe のみ・ゴミ箱経由）。"
+        );
+    }
     let (rules, entries) = scan_and_apply_prefs(platform, config, args.all);
 
     // 完全削除は、確認が取れるまで「未確定」（＝プレビューのみ）として扱う。
@@ -646,6 +696,125 @@ fn print_restore_candidate(candidate: &RestoreCandidate) {
     );
 }
 
+/// `pc-cleaner schedule` の実装（E2 / Issue #56）。
+///
+/// `install`/`uninstall`/`status` のいずれも判定・削除ロジックは持たず、
+/// `Platform::install_scheduled_task` 等を呼ぶだけ（F-CLI-01 と同じ方針）。
+/// 登録される内容は `clean --scheduled`（Safe のみ・ゴミ箱経由）に固定され、
+/// このコマンド自体は「登録するかどうか」だけを扱う。
+fn run_schedule(platform: &dyn platform::Platform, args: ScheduleArgs) -> ExitCode {
+    match args.action {
+        ScheduleAction::Install {
+            weekly,
+            time,
+            dry_run,
+        } => run_schedule_install(platform, weekly, &time, dry_run),
+        ScheduleAction::Uninstall => run_schedule_uninstall(platform),
+        ScheduleAction::Status => run_schedule_status(platform),
+    }
+}
+
+fn run_schedule_install(
+    platform: &dyn platform::Platform,
+    weekly: bool,
+    time: &str,
+    dry_run: bool,
+) -> ExitCode {
+    let (hour, minute) = match parse_time(time) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frequency = if weekly {
+        ScheduleFrequency::Weekly
+    } else {
+        ScheduleFrequency::Daily
+    };
+    let spec = ScheduleSpec {
+        frequency,
+        hour,
+        minute,
+    };
+    let frequency_label = if weekly { "毎週日曜日" } else { "毎日" };
+
+    if dry_run {
+        println!(
+            "以下の内容でタスクスケジューラへ登録します（--dry-run のため実際には登録しません）:"
+        );
+        println!("  頻度: {frequency_label}");
+        println!("  時刻: {}", spec.start_time());
+        println!(
+            "  実行内容: pc-cleaner clean --scheduled（Safe のみ・ゴミ箱経由・管理者権限不要）"
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    match platform.install_scheduled_task(spec) {
+        Ok(()) => {
+            println!(
+                "タスクスケジューラへ登録しました（{frequency_label}・{}）。",
+                spec.start_time()
+            );
+            println!(
+                "実行内容: pc-cleaner clean --scheduled（Safe のみ・ゴミ箱経由・管理者権限不要）。"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("タスクスケジューラへの登録に失敗しました: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_schedule_uninstall(platform: &dyn platform::Platform) -> ExitCode {
+    match platform.uninstall_scheduled_task() {
+        Ok(()) => {
+            println!("タスクスケジューラの登録を削除しました。");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("タスクスケジューラの登録削除に失敗しました: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_schedule_status(platform: &dyn platform::Platform) -> ExitCode {
+    match platform.scheduled_task_status() {
+        Ok(status) => {
+            if status.installed {
+                println!("登録済みです。");
+                if let Some(detail) = &status.detail {
+                    println!("{detail}");
+                }
+            } else {
+                println!("未登録です（pc-cleaner schedule install で登録できます）。");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("登録状況を確認できませんでした: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `--time` 引数（`HH:MM`）を時・分へ分解する。範囲外の値やフォーマット違反は
+/// 利用者にわかる日本語メッセージで `Err` にする。
+fn parse_time(s: &str) -> Result<(u8, u8), String> {
+    let invalid = || format!("時刻は HH:MM 形式で指定してください（例: 03:00）: {s}");
+    let (h, m) = s.split_once(':').ok_or_else(invalid)?;
+    let hour: u8 = h.parse().map_err(|_| invalid())?;
+    let minute: u8 = m.parse().map_err(|_| invalid())?;
+    if hour > 23 || minute > 59 {
+        return Err(format!("時刻は 00:00〜23:59 の範囲で指定してください: {s}"));
+    }
+    Ok((hour, minute))
+}
+
 /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
 ///
 /// 履歴の記録は削除の成否そのものには影響させない。書き込みに失敗しても
@@ -864,6 +1033,109 @@ mod tests {
 
         let cli = Cli::try_parse_from(["pc-cleaner", "clean"]).unwrap();
         assert!(!cli.elevated);
+    }
+
+    #[test]
+    fn cli_parses_schedule_install_with_defaults_and_options() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "schedule", "install"]).unwrap();
+        match cli.command {
+            Command::Schedule(args) => match args.action {
+                ScheduleAction::Install {
+                    weekly,
+                    time,
+                    dry_run,
+                } => {
+                    assert!(!weekly);
+                    assert_eq!(time, "03:00");
+                    assert!(!dry_run);
+                }
+                _ => panic!("expected Install"),
+            },
+            _ => panic!("expected Schedule"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "pc-cleaner",
+            "schedule",
+            "install",
+            "--weekly",
+            "--time",
+            "09:30",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Schedule(args) => match args.action {
+                ScheduleAction::Install {
+                    weekly,
+                    time,
+                    dry_run,
+                } => {
+                    assert!(weekly);
+                    assert_eq!(time, "09:30");
+                    assert!(dry_run);
+                }
+                _ => panic!("expected Install"),
+            },
+            _ => panic!("expected Schedule"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_schedule_uninstall_and_status() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "schedule", "uninstall"]).unwrap();
+        assert!(!cli.command.admin_requested());
+        match cli.command {
+            Command::Schedule(args) => assert!(matches!(args.action, ScheduleAction::Uninstall)),
+            _ => panic!("expected Schedule"),
+        }
+
+        let cli = Cli::try_parse_from(["pc-cleaner", "schedule", "status"]).unwrap();
+        match cli.command {
+            Command::Schedule(args) => assert!(matches!(args.action, ScheduleAction::Status)),
+            _ => panic!("expected Schedule"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scheduled_flag_on_clean() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "clean", "--scheduled"]).unwrap();
+        match cli.command {
+            Command::Clean(args) => assert!(args.scheduled),
+            _ => panic!("expected Clean"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_scheduled_combined_with_all_permanent_or_admin() {
+        assert!(
+            Cli::try_parse_from(["pc-cleaner", "clean", "--scheduled", "--all"]).is_err(),
+            "--scheduled と --all は同時指定できないこと"
+        );
+        assert!(
+            Cli::try_parse_from(["pc-cleaner", "clean", "--scheduled", "--permanent"]).is_err(),
+            "--scheduled と --permanent は同時指定できないこと"
+        );
+        assert!(
+            Cli::try_parse_from(["pc-cleaner", "clean", "--scheduled", "--admin"]).is_err(),
+            "--scheduled と --admin は同時指定できないこと"
+        );
+    }
+
+    #[test]
+    fn parse_time_accepts_valid_hh_mm() {
+        assert_eq!(parse_time("03:00"), Ok((3, 0)));
+        assert_eq!(parse_time("23:59"), Ok((23, 59)));
+        assert_eq!(parse_time("00:00"), Ok((0, 0)));
+    }
+
+    #[test]
+    fn parse_time_rejects_malformed_or_out_of_range_values() {
+        assert!(parse_time("9:00").is_ok(), "1桁の時は許容する");
+        assert!(parse_time("930").is_err());
+        assert!(parse_time("24:00").is_err());
+        assert!(parse_time("12:60").is_err());
+        assert!(parse_time("ab:cd").is_err());
     }
 
     #[test]

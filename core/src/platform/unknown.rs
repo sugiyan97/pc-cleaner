@@ -87,5 +87,23 @@ mod tests {
                 .iter()
                 .all(|(_, outcome)| matches!(outcome, RestoreItemOutcome::Failed { .. }))
         );
+
+        let spec = crate::schedule::ScheduleSpec {
+            frequency: crate::schedule::ScheduleFrequency::Daily,
+            hour: 3,
+            minute: 0,
+        };
+        assert!(matches!(
+            platform.install_scheduled_task(spec),
+            Err(PlatformError::Unsupported("install_scheduled_task"))
+        ));
+        assert!(matches!(
+            platform.uninstall_scheduled_task(),
+            Err(PlatformError::Unsupported("uninstall_scheduled_task"))
+        ));
+        assert!(matches!(
+            platform.scheduled_task_status(),
+            Err(PlatformError::Unsupported("scheduled_task_status"))
+        ));
     }
 }

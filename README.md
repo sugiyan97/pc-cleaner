@@ -60,6 +60,10 @@ pc-cleaner scan --format json                       # 走査結果を JSON で�
 pc-cleaner clean --dry-run --format csv --output plan.csv  # 削除予定を CSV でファイルへ書き出す
 pc-cleaner restore                    # ゴミ箱の復元候補を一覧表示するだけ（何も変更しない）
 pc-cleaner restore --run <RUN_ID> --yes   # 指定した実行分をまとめて元の場所へ復元する
+pc-cleaner schedule install            # タスクスケジューラへ登録（毎日 03:00・Safe のみ・ゴミ箱経由）
+pc-cleaner schedule install --weekly --time 09:00 --dry-run  # 登録内容だけ確認（実際には登録しない）
+pc-cleaner schedule status             # 登録状況を表示する
+pc-cleaner schedule uninstall          # 登録を削除する
 ```
 
 `log` は `clean` の実行結果を記録した削除ログ（`<config_dir>/deletion_log.jsonl`）を表示するだけで、何も削除しません。誤削除が起きた際の追跡用に、実行のたびにパス付きで項目単位の記録を残します（既定で有効。無効化する場合は `config.json` の `audit_log_enabled` を `false` にするか、GUI の「削除ログを記録する」チェックボックスを外してください）。
@@ -69,6 +73,8 @@ pc-cleaner restore --run <RUN_ID> --yes   # 指定した実行分をまとめて
 `restore` は誤ってゴミ箱送りにしてしまった項目を元の場所へ戻すための導線です。ゴミ箱の中身と削除ログを突き合わせ、pc-cleaner が削除したと確認できるものだけを既定の対象にします（`--all-trash` を付けると他アプリが削除した可能性があるものも含めて一覧・対象にします）。既定では一覧表示のみで何も変更せず、`--yes` を付けたときだけ実際に復元します。復元先に既に同名のファイルがある場合は上書きせず、その項目だけスキップします。GUI では「これまでの実績」の各行にある「🔄 元に戻す」ボタンから、その実行分をまとめて復元できます。
 
 `--admin` は未昇格の場合、UAC の確認画面を経て管理者権限で起動し直し、元のプロセスは終了します。`ShellExecuteW` で新しいコンソールウィンドウが開くため、出力は新しいウィンドウに表示され、処理完了と同時に閉じます。出力を確認したい場合は、あらかじめ管理者としてターミナルを開いてから `pc-cleaner` を実行してください（この場合 `--admin` は不要です）。昇格すると、管理者権限が必要な領域（`system_temp` = `C:\Windows\Temp`）も走査・削除の対象になります。ただし既定では選択されず（Safety: Review）、内容を確認したうえで手動で選択する必要があります。
+
+`schedule` は Windows のタスクスケジューラと連携し、無人の状態で定期的に自動掃除するための導線です（`install` は既存タスクがあれば内容を更新します）。登録される内容は常に `pc-cleaner clean --scheduled`（**Safe ルールのみ・ゴミ箱経由・管理者権限不要**）に固定されており、`--all` / `--permanent` / `--admin` を組み合わせることはできません。`--weekly` を付けない場合は毎日、付けた場合は毎週日曜日に実行します。
 
 #### ルール定義ファイル（`rules.json`）
 

@@ -164,6 +164,42 @@ impl std::error::Error for ElevateError {}
 /// 権限昇格の操作結果。
 pub type ElevateResult = std::result::Result<(), ElevateError>;
 
+/// ゴミ箱内の1項目（D3 / Issue #53）。
+///
+/// OS 固有の識別子は `id`（不透明な文字列）として持つ。`trash::TrashItem`
+/// を `core` の公開 API に漏らさない（`PlatformError::Trash` が
+/// `trash::Error` を文字列化しているのと同じ方針）。`id` は
+/// `Platform::restore_from_trash` にそのまま渡せば足りる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashEntry {
+    /// この項目を一意に識別する、実装依存の不透明な文字列。
+    pub id: String,
+    /// 削除前の元のパス。
+    pub original_path: PathBuf,
+    /// 削除時刻（UNIX epoch 秒）。取得できない場合は `None`。
+    pub deleted_at_secs: Option<u64>,
+    /// サイズ（バイト）。取得できない場合は `None`。
+    pub size: Option<u64>,
+}
+
+/// [`Platform::restore_from_trash`] の1項目分の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreItemOutcome {
+    /// 元の場所へ復元できた。
+    Restored,
+    /// 復元先に既に同名の項目が存在したため、上書きを避けてスキップした
+    /// （NF-SAF-01：復元によって既存ファイルを壊さない）。
+    SkippedCollision,
+    /// 指定された `id` がゴミ箱内に見つからなかった（`list_trash` から
+    /// `restore_from_trash` までの間に、他アプリ等が復元・完全削除した等）。
+    NotFound,
+    /// 復元に失敗した。
+    Failed {
+        /// エラーメッセージ。
+        message: String,
+    },
+}
+
 /// OS 固有の知識（既知ディレクトリ解決・ゴミ箱送り・管理者権限要否判定）を
 /// 隠蔽する抽象インターフェース（要件 4.2）。
 ///
@@ -229,6 +265,36 @@ pub trait Platform {
     /// 同じ処理を行うプロセスが 2 つ同時に走ることになる。`core` 側では
     /// `process::exit` を呼ばない（GUI の後始末・テスト可能性を壊さないため）。
     fn elevate(&self, args: &[String]) -> ElevateResult;
+
+    /// ゴミ箱の中身を列挙する（D3 / Issue #53）。
+    ///
+    /// 既定実装は未対応を返す（`unknown.rs` スタブ用、NF-OS-02）。
+    fn list_trash(&self) -> Result<Vec<TrashEntry>> {
+        Err(PlatformError::Unsupported("list_trash"))
+    }
+
+    /// `ids`（[`TrashEntry::id`]）に対応する項目を元の場所へ復元する
+    /// （D3 / Issue #53）。
+    ///
+    /// 1件ごとの結果を返す（`execute()` が `DeleteOutcome` を返すのと同じ
+    /// 考え方。1件の失敗・スキップで残りの復元を止めない）。復元先に既に
+    /// 同名の項目がある場合は自動上書きせず `SkippedCollision` として
+    /// スキップすること（NF-SAF-01：誤削除の救済が別の上書き事故を生んでは
+    /// ならない）。
+    ///
+    /// 既定実装は全件を未対応として返す（`unknown.rs` スタブ用、NF-OS-02）。
+    fn restore_from_trash(&self, ids: &[String]) -> Vec<(String, RestoreItemOutcome)> {
+        ids.iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    RestoreItemOutcome::Failed {
+                        message: PlatformError::Unsupported("restore_from_trash").to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
 }
 
 /// 昇格して自プロセスを再実行すべきかを判定する純粋関数

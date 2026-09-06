@@ -267,6 +267,11 @@ pub struct HistoryRow {
     pub when: String,
     /// 解放容量・件数のまとめ。
     pub summary: String,
+    /// この実行の識別子。ロールバック補助（D3 / Issue #53）が「この実行を
+    /// まとめて元に戻す」ボタンの対象特定に使う。`0` は #51 より前に記録
+    /// された実績で対応する `run_id` が無いことを表す（`HistoryEntry::run_id`
+    /// のドキュメント参照）。
+    pub run_id: u64,
 }
 
 /// `history` から、新しい順に最大 `limit` 件の表示行を作る。
@@ -292,6 +297,7 @@ pub fn history_rows(history: &History, now_secs: u64, limit: usize) -> Vec<Histo
                         ""
                     }
                 ),
+                run_id: entry.run_id,
             }
         })
         .collect()
@@ -560,8 +566,17 @@ mod tests {
         freed_bytes: u64,
         deleted_count: usize,
     ) -> pc_cleaner_core::HistoryEntry {
+        history_entry_with_run_id(0, timestamp_secs, freed_bytes, deleted_count)
+    }
+
+    fn history_entry_with_run_id(
+        run_id: u64,
+        timestamp_secs: u64,
+        freed_bytes: u64,
+        deleted_count: usize,
+    ) -> pc_cleaner_core::HistoryEntry {
         pc_cleaner_core::HistoryEntry {
-            run_id: 0,
+            run_id,
             timestamp_secs,
             freed_bytes,
             deleted_count,
@@ -673,6 +688,16 @@ mod tests {
         assert!(rows[0].summary.contains("5 件"));
         // 次点（i=3, timestamp=3000）。
         assert!(rows[1].summary.contains("4.0 KB"));
+    }
+
+    #[test]
+    fn history_rows_carry_through_the_run_id() {
+        let mut history = History::default();
+        history
+            .entries
+            .push(history_entry_with_run_id(42, 100, 1024, 1));
+        let rows = history_rows(&history, 200, 5);
+        assert_eq!(rows[0].run_id, 42);
     }
 
     #[test]

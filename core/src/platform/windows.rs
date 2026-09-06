@@ -13,7 +13,9 @@
 
 use super::KnownDir;
 #[cfg(windows)]
-use super::{ElevateError, ElevateResult, Platform, PlatformError, Result};
+use super::{
+    ElevateError, ElevateResult, Platform, PlatformError, RestoreItemOutcome, Result, TrashEntry,
+};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -269,10 +271,133 @@ fn trash_error_message(err: &trash::Error) -> String {
         trash::Error::Unknown { description } => format!(
             "ゴミ箱への移動に失敗しました（{description}）。別のアプリがファイルを使用しているか、アクセス権限がない可能性があります。しばらく待つか、該当のアプリを閉じてから再試行してください。"
         ),
-        // RestoreCollision / RestoreTwins は復元専用でゴミ箱送りでは発生しない。
-        // 将来クレートが分岐を増やしても壊れないよう汎用文にフォールバックする。
-        _ => "ゴミ箱への移動中に予期しないエラーが発生しました。".to_string(),
+        // RestoreCollision / RestoreTwins（D3 / Issue #53）は復元専用でゴミ箱
+        // 送りでは発生しないが、`restore_from_trash` の再試行ループ
+        // （`restore_trash_items`）が対処しきれなかった場合の表示用に、
+        // ここでも判読可能な文を用意しておく。
+        trash::Error::RestoreCollision { path, .. } => format!(
+            "{} には既に同名の項目があるため復元できませんでした。",
+            path.display()
+        ),
+        trash::Error::RestoreTwins { path, .. } => format!(
+            "{} へ複数の項目が同時に復元されようとしたため、判別できず復元を中止しました。",
+            path.display()
+        ),
+        // Windows ターゲットでの `trash::Error` はここまでの8variantで尽くされて
+        // おり（`FileSystem` は freedesktop バックエンド専用でここには現れない）、
+        // ワイルドカードを置くと to_string 側が dead code になる
+        // （実クロスビルドで確認済み）。クレートの更新で variant が増えた場合は
+        // ここでコンパイルエラーとして検知される。
     }
+}
+
+/// ゴミ箱内の項目を識別するための不透明な文字列を作る（D3 / Issue #53）。
+/// `TrashItem::id` は "デスクトップ絶対パース名"（`SHCreateItemFromParsingName`
+/// で同じ項目を再解決できる永続的な識別子）であり、`list()` を呼び直しても
+/// 同じ項目には同じ値が返る（trash-rs の Windows 実装を確認済み）。
+#[cfg(windows)]
+fn trash_item_id(item: &trash::TrashItem) -> String {
+    item.id.to_string_lossy().into_owned()
+}
+
+/// ゴミ箱項目のサイズ（バイト、取得できる場合のみ）。ディレクトリの場合
+/// `trash` クレートはエントリ数を返すことがあるため、その場合はエントリ数を
+/// バイト数の代わりとして扱う（表示用の近似値であり、削除可否には影響しない）。
+#[cfg(windows)]
+fn trash_item_size(item: &trash::TrashItem) -> Option<u64> {
+    trash::os_limited::metadata(item)
+        .ok()
+        .map(|m| match m.size {
+            trash::TrashItemSize::Bytes(bytes) => bytes,
+            trash::TrashItemSize::Entries(count) => count as u64,
+        })
+}
+
+/// `ids` に対応するゴミ箱項目を元の場所へ復元する（D3 / Issue #53）。
+///
+/// `trash::os_limited::restore_all` は衝突（`RestoreCollision` /
+/// `RestoreTwins`）を検出すると**何も復元せずに中断**し、渡した項目一式を
+/// そのまま返す（trash-rs の実装を確認済み：`remaining_items` / `items` は
+/// 「処理待ちの残り」ではなく「今回の呼び出しに渡した入力一式」そのもの）。
+/// そのため、衝突時はエラーが持つ `path` と一致する項目
+/// （`TrashItem::original_path()`）だけを対象から外してスキップ扱いにし、
+/// 残りで再試行するループにする。自動上書きは絶対にしない（NF-SAF-01：
+/// 誤削除の救済で別の上書き事故を起こさないため）。
+#[cfg(windows)]
+fn restore_trash_items(ids: &[String]) -> Vec<(String, RestoreItemOutcome)> {
+    let all_items = match trash::os_limited::list() {
+        Ok(items) => items,
+        Err(e) => {
+            let message = trash_error_message(&e);
+            return ids
+                .iter()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        RestoreItemOutcome::Failed {
+                            message: message.clone(),
+                        },
+                    )
+                })
+                .collect();
+        }
+    };
+
+    let mut results = Vec::with_capacity(ids.len());
+    let mut pending = Vec::new();
+    for id in ids {
+        match all_items.iter().find(|item| &trash_item_id(item) == id) {
+            Some(item) => pending.push(item.clone()),
+            None => results.push((id.clone(), RestoreItemOutcome::NotFound)),
+        }
+    }
+
+    while !pending.is_empty() {
+        match trash::os_limited::restore_all(pending.clone()) {
+            Ok(()) => {
+                for item in pending.drain(..) {
+                    results.push((trash_item_id(&item), RestoreItemOutcome::Restored));
+                }
+            }
+            Err(trash::Error::RestoreCollision { path, .. })
+            | Err(trash::Error::RestoreTwins { path, .. }) => {
+                let (colliding, rest): (Vec<trash::TrashItem>, Vec<trash::TrashItem>) = pending
+                    .into_iter()
+                    .partition(|item| item.original_path() == path);
+                if colliding.is_empty() {
+                    // 理論上到達しない防御的分岐：衝突箇所が pending のどれとも
+                    // 一致しない。無限ループを避けるため残りは失敗扱いにする。
+                    for item in rest {
+                        results.push((
+                            trash_item_id(&item),
+                            RestoreItemOutcome::Failed {
+                                message: "復元の衝突を解決できませんでした。".to_string(),
+                            },
+                        ));
+                    }
+                    pending = Vec::new();
+                } else {
+                    for item in &colliding {
+                        results.push((trash_item_id(item), RestoreItemOutcome::SkippedCollision));
+                    }
+                    pending = rest;
+                }
+            }
+            Err(e) => {
+                let message = trash_error_message(&e);
+                for item in pending.drain(..) {
+                    results.push((
+                        trash_item_id(&item),
+                        RestoreItemOutcome::Failed {
+                            message: message.clone(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    results
 }
 
 /// `windows::core::Error`（`ShellExecuteExW` 失敗時）を、ユーザーが読める
@@ -435,6 +560,24 @@ impl Platform for WindowsPlatform {
         let exe = std::env::current_exe()
             .map_err(|e| ElevateError::CurrentExeUnavailable(e.to_string()))?;
         shell_execute_runas(&exe, args)
+    }
+
+    fn list_trash(&self) -> Result<Vec<TrashEntry>> {
+        let items =
+            trash::os_limited::list().map_err(|e| PlatformError::Trash(trash_error_message(&e)))?;
+        Ok(items
+            .iter()
+            .map(|item| TrashEntry {
+                id: trash_item_id(item),
+                original_path: item.original_path(),
+                deleted_at_secs: u64::try_from(item.time_deleted).ok(),
+                size: trash_item_size(item),
+            })
+            .collect())
+    }
+
+    fn restore_from_trash(&self, ids: &[String]) -> Vec<(String, RestoreItemOutcome)> {
+        restore_trash_items(ids)
     }
 }
 
@@ -680,5 +823,59 @@ mod trash_error_tests {
         };
         let msg = trash_error_message(&err);
         assert!(msg.contains(r"C:\foo\bar.tmp"));
+    }
+
+    #[test]
+    fn restore_collision_mentions_path_and_is_readable() {
+        let err = trash::Error::RestoreCollision {
+            path: std::path::PathBuf::from(r"C:\Users\alice\Downloads\a.txt"),
+            remaining_items: Vec::new(),
+        };
+        let msg = trash_error_message(&err);
+        assert!(msg.contains(r"C:\Users\alice\Downloads\a.txt"));
+        assert!(!msg.contains("RestoreCollision"));
+    }
+
+    #[test]
+    fn restore_twins_mentions_path_and_is_readable() {
+        let err = trash::Error::RestoreTwins {
+            path: std::path::PathBuf::from(r"C:\Users\alice\Downloads\a.txt"),
+            items: Vec::new(),
+        };
+        let msg = trash_error_message(&err);
+        assert!(msg.contains(r"C:\Users\alice\Downloads\a.txt"));
+        assert!(!msg.contains("RestoreTwins"));
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod restore_tests {
+    use super::trash_item_id;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn item_with_id(id: &str) -> trash::TrashItem {
+        trash::TrashItem {
+            id: OsString::from(id),
+            name: OsString::from("a.txt"),
+            original_parent: PathBuf::from(r"C:\Users\alice\Downloads"),
+            time_deleted: 1_700_000_000,
+        }
+    }
+
+    // `trash_item_id` は `TrashItem::id`（デスクトップ絶対パース名）を
+    // そのまま使う。list() を呼び直しても同じ項目には同じ id が返ることが
+    // 前提（doc コメント参照）であり、少なくとも「同じ id なら同じ文字列に
+    // なる／異なる id なら異なる文字列になる」ことをここで固定する。
+    // `restore_trash_items` 自体は実際のゴミ箱 I/O を伴うため、
+    // `elevate_tests` と同じ方針でここではユニットテストしない。
+    #[test]
+    fn trash_item_id_round_trips_the_underlying_id() {
+        assert_eq!(trash_item_id(&item_with_id("a")), "a");
+        assert_ne!(
+            trash_item_id(&item_with_id("a")),
+            trash_item_id(&item_with_id("b"))
+        );
     }
 }

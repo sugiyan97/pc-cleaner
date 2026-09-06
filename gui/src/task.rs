@@ -7,11 +7,12 @@
 //! だけ）。UI スレッドは `WorkerMsg` をチャネル経由で受け取り、
 //! `update()` の冒頭でまとめて反映する（NF-PRF-02：走査中の進捗通知）。
 
-use pc_cleaner_core::platform::{self, Platform};
+use pc_cleaner_core::platform::{self, Platform, RestoreItemOutcome};
 use pc_cleaner_core::{
-    Config, DeleteOutcome, DeletePlan, DeleteProgress, Rule, RuleSet, ScanEntry, ScanProgress,
-    delete, scan_pipeline_with_progress,
+    Config, DeleteOutcome, DeletePlan, DeleteProgress, RestoreOutcome, Rule, RuleSet, ScanEntry,
+    ScanProgress, audit, delete, restore, scan_pipeline_with_progress,
 };
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -33,6 +34,8 @@ pub enum WorkerMsg {
     Delete(DeleteProgress),
     /// 削除完了。
     DeleteDone(DeleteOutcome),
+    /// 復元完了（D3 / Issue #53）。
+    RestoreDone(RestoreOutcome),
 }
 
 /// 実行中の `Platform` を生成する。`demo` が `true` かつ `demo` feature が
@@ -107,4 +110,54 @@ pub fn spawn_delete(ctx: egui::Context, plan: DeletePlan, demo: bool) -> Receive
         ctx.request_repaint();
     });
     rx
+}
+
+/// 指定した実行（`run_id`）分の削除をゴミ箱から復元する（D3 / Issue #53）。
+///
+/// 一覧のレビューは行わず、呼び出された時点で `run_id` に属する全項目を
+/// 直ちに復元する。GUI では「この実行を元に戻す」ボタン1つで完結させる
+/// ための設計であり、CLI の `restore`（既定は一覧のみ・`--yes` で確定）
+/// より踏み込んだ操作になるため、呼び出し側（`app.rs`）で確認モーダルを
+/// 経由してから呼ぶこと。
+pub fn spawn_restore(ctx: egui::Context, run_id: u64, demo: bool) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let platform = make_platform(demo);
+        let outcome = restore_run(platform.as_ref(), run_id);
+        let _ = tx.send(WorkerMsg::RestoreDone(outcome));
+        ctx.request_repaint();
+    });
+    rx
+}
+
+/// `spawn_restore` の本体。ゴミ箱一覧の取得に失敗した場合（未対応 OS 等）は、
+/// その旨を1件の `Failed` 結果として返す（`RestoreOutcome` に「全体が失敗
+/// した」を表すバリアントを別途設けるより、既存の項目単位の結果に載せる
+/// ほうが `app.rs` 側の表示を1系統に保てるため）。
+fn restore_run(platform: &dyn Platform, run_id: u64) -> RestoreOutcome {
+    let trash = match platform.list_trash() {
+        Ok(entries) => entries,
+        Err(e) => {
+            return RestoreOutcome {
+                results: vec![(
+                    PathBuf::new(),
+                    RestoreItemOutcome::Failed {
+                        message: e.to_string(),
+                    },
+                )],
+            };
+        }
+    };
+
+    let audit_records = audit::audit_file_path(platform)
+        .and_then(|path| audit::load(&path).ok())
+        .unwrap_or_default();
+
+    let candidates = restore::correlate(&trash, &audit_records);
+    let for_run: Vec<_> = restore::candidates_for_run(&candidates, run_id)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    restore::restore(platform, &for_run)
 }

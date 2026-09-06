@@ -19,8 +19,9 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pc_cleaner_core::{
     AuditRecord, Config, DeleteMode, DeleteOutcome, DeletePlan, DeleteRequest, ElevateError,
-    ItemOutcome, RuleSet, ScanEntry, audit, breakdown, config, execute, export, history,
-    human_size, platform, preview, safety_scope, scan_pipeline, should_relaunch,
+    ItemOutcome, RestoreCandidate, RestoreItemOutcome, RuleSet, ScanEntry, audit, breakdown,
+    config, execute, export, history, human_size, platform, preview, restore, safety_scope,
+    scan_pipeline, should_relaunch,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -58,6 +59,28 @@ enum Command {
     Clean(CleanArgs),
     /// 削除ログ（監査ログ）を表示する（D1 / Issue #51）。何も削除しない
     Log(LogArgs),
+    /// ゴミ箱からの復元を補助する（D3 / Issue #53）。既定では一覧表示のみ
+    Restore(RestoreArgs),
+}
+
+#[derive(Args)]
+struct RestoreArgs {
+    /// 指定した実行（`log` で確認できる run_id）分のみを対象にする
+    #[arg(long)]
+    run: Option<u64>,
+    /// 指定したパス（元の場所、完全一致）のみを対象にする
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// 削除ログと突き合わせられない項目（他アプリが削除した可能性がある）
+    /// も一覧・対象に含める（既定では pc-cleaner が削除したと確認できた
+    /// ものだけを対象にする）
+    #[arg(long)]
+    all_trash: bool,
+    /// 一覧表示だけでなく実際に復元する（省略時は一覧表示のみで何も
+    /// 変更しない。`clean --dry-run` と同じ「明示しない限り状態を変えない」
+    /// 方針）
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(Args)]
@@ -126,6 +149,7 @@ impl Command {
             Command::Scan(args) => args.admin,
             Command::Clean(args) => args.admin,
             Command::Log(_) => false,
+            Command::Restore(_) => false,
         }
     }
 }
@@ -157,6 +181,7 @@ fn main() -> ExitCode {
         Command::Scan(args) => run_scan(platform.as_ref(), &config, args),
         Command::Clean(args) => run_clean(platform.as_ref(), &config, args),
         Command::Log(args) => run_log(platform.as_ref(), args),
+        Command::Restore(args) => run_restore(platform.as_ref(), args),
     }
 }
 
@@ -530,6 +555,97 @@ fn print_audit_record(record: &AuditRecord) {
     );
 }
 
+/// `pc-cleaner restore` の実装（D3 / Issue #53）。
+///
+/// 既定では一覧表示のみで、`--yes` を明示したときだけ実際に復元する
+/// （`clean` が既定ドライランであるのと同じ「明示しない限り状態を変えない」
+/// 方針）。復元は削除ではないため許可リスト方式（NF-SAF-04）の対象外だが、
+/// 復元先に既存ファイルがあれば自動上書きしない（NF-SAF-01。
+/// `Platform::restore_from_trash` のドキュメント参照）。
+fn run_restore(platform: &dyn platform::Platform, args: RestoreArgs) -> ExitCode {
+    let trash = match platform.list_trash() {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("ゴミ箱の一覧を取得できませんでした: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let audit_records = match audit::audit_file_path(platform) {
+        Some(path) => match audit::load(&path) {
+            Ok(records) => records,
+            Err(e) => {
+                eprintln!("警告: 削除ログの読み込みに失敗しました: {e}（由来不明として扱います）");
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
+
+    let mut candidates = restore::correlate(&trash, &audit_records);
+    if !args.all_trash {
+        candidates.retain(|c| c.rule_id.is_some());
+    }
+    if let Some(run_id) = args.run {
+        candidates.retain(|c| c.run_id == Some(run_id));
+    }
+    if let Some(path) = &args.path {
+        candidates.retain(|c| &c.entry.original_path == path);
+    }
+
+    if candidates.is_empty() {
+        println!("復元候補なし。");
+        return ExitCode::SUCCESS;
+    }
+
+    if !args.yes {
+        println!(
+            "復元候補: {} 件（--yes を付けると実際に復元します。何も変更していません）",
+            candidates.len()
+        );
+        for candidate in &candidates {
+            print_restore_candidate(candidate);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let outcome = restore::restore(platform, &candidates);
+    println!(
+        "復元完了: 成功 {} 件、衝突によるスキップ {} 件、対象消失 {} 件、失敗 {} 件",
+        outcome.restored_count(),
+        outcome.skipped_count(),
+        outcome.not_found_count(),
+        outcome.failed_count()
+    );
+    for (path, item_outcome) in &outcome.results {
+        if let RestoreItemOutcome::Failed { message } = item_outcome {
+            eprintln!("  失敗: {} — {message}", path.display());
+        }
+    }
+
+    if outcome.failed_count() > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn print_restore_candidate(candidate: &RestoreCandidate) {
+    let origin = match (&candidate.rule_id, candidate.run_id) {
+        (Some(rule_id), Some(run_id)) => format!("[run {run_id}] {rule_id}"),
+        _ => "由来不明".to_string(),
+    };
+    let size = candidate
+        .entry
+        .size
+        .map(human_size)
+        .unwrap_or_else(|| "?".to_string());
+    println!(
+        "{origin:<24} {size:>10}  {}",
+        candidate.entry.original_path.display()
+    );
+}
+
 /// 削除結果を履歴（`history.json`）へ記録する（C4 / Issue #50）。
 ///
 /// 履歴の記録は削除の成否そのものには影響させない。書き込みに失敗しても
@@ -684,6 +800,42 @@ mod tests {
                 assert_eq!(args.run, Some(42));
             }
             _ => panic!("expected Log"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_restore_subcommand_with_defaults_and_options() {
+        let cli = Cli::try_parse_from(["pc-cleaner", "restore"]).unwrap();
+        assert!(!cli.command.admin_requested());
+        match cli.command {
+            Command::Restore(args) => {
+                assert_eq!(args.run, None);
+                assert_eq!(args.path, None);
+                assert!(!args.all_trash);
+                assert!(!args.yes);
+            }
+            _ => panic!("expected Restore"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "pc-cleaner",
+            "restore",
+            "--run",
+            "7",
+            "--path",
+            "a.txt",
+            "--all-trash",
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Restore(args) => {
+                assert_eq!(args.run, Some(7));
+                assert_eq!(args.path, Some(PathBuf::from("a.txt")));
+                assert!(args.all_trash);
+                assert!(args.yes);
+            }
+            _ => panic!("expected Restore"),
         }
     }
 

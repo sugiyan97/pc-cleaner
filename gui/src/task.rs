@@ -25,6 +25,12 @@ pub enum WorkerMsg {
     /// 走査完了。以後の `preview()` / 表示に使うルール一覧と走査結果。
     ScanDone {
         rules: Vec<Rule>,
+        /// 現在の `scope`（Safe のみ／すべて）に関わらない、解決済みの全ルール
+        /// （`RuleSet::all()`）。サイドバーのルール別既定・「管理者権限が
+        /// 必要」一覧・ユーザー定義ルール件数の表示は、走査対象を絞り込む前の
+        /// この一覧を使う（rules.json の上書き・追加ルールが scope で消えて
+        /// 見えなくならないようにするため）。
+        all_rules: Vec<Rule>,
         entries: Vec<ScanEntry>,
         /// ルール定義ファイル（D4 / Issue #54）の読み込み・検証で見つかった
         /// 問題。空なら警告なし。
@@ -76,6 +82,7 @@ pub fn spawn_scan(
             .map(|issue| issue.message.clone())
             .collect();
         let rules = rule_set.for_safeties(&scope.safeties(), platform.is_elevated());
+        let all_rules = rule_set.all().to_vec();
         let progress_tx = tx.clone();
         let progress_ctx = ctx.clone();
         let entries =
@@ -85,6 +92,7 @@ pub fn spawn_scan(
             });
         let _ = tx.send(WorkerMsg::ScanDone {
             rules,
+            all_rules,
             entries,
             rule_issues,
         });

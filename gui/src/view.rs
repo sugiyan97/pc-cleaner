@@ -5,7 +5,6 @@
 //! 同じ考え方）。
 
 use pc_cleaner_core::format::relative_days;
-use pc_cleaner_core::rule::builtin_rules;
 use pc_cleaner_core::{
     AuditRecord, BucketBreakdown, CategoryBreakdown, Config, History, ItemOutcome, Rule, Safety,
     ScanEntry, SkipReason, apply_rule_prefs,
@@ -79,16 +78,18 @@ pub fn duplicate_badge(duplicate: Option<pc_cleaner_core::DuplicateInfo>) -> Opt
     Some(format!("⧉ 重複（他に{}件）", info.group_size - 1))
 }
 
-/// 現在の昇格状態では対象にできない（`needs_admin` かつ未昇格の）ルールを
-/// 返す。一覧に「管理者権限が必要」として別枠表示するために使う
+/// `rules`（走査 scope に絞り込む前の解決済み全ルール、`RuleSet::all()`）の
+/// うち、現在の昇格状態では対象にできない（`needs_admin` かつ未昇格の）もの
+/// を返す。一覧に「管理者権限が必要」として別枠表示するために使う
 /// （NF-SAF-05 / A1 / Issue #40）。
 ///
 /// [`pc_cleaner_core::rule::scannable_rules`] の厳密な補集合であること
 /// （`future_rules_and_scannable_rules_are_exact_complements` で検証）。
-pub fn future_rules(config: &Config, elevated: bool) -> Vec<Rule> {
-    builtin_rules(config)
-        .into_iter()
+pub fn future_rules(rules: &[Rule], elevated: bool) -> Vec<Rule> {
+    rules
+        .iter()
         .filter(|r| !r.is_permitted(elevated))
+        .cloned()
         .collect()
 }
 
@@ -406,7 +407,10 @@ mod tests {
 
     #[test]
     fn future_rules_contains_only_needs_admin_rules_when_not_elevated() {
-        let rules = future_rules(&Config::default(), false);
+        use pc_cleaner_core::rule::builtin_rules;
+
+        let all = builtin_rules(&Config::default());
+        let rules = future_rules(&all, false);
         assert!(!rules.is_empty());
         assert!(rules.iter().all(|r| r.needs_admin));
         assert!(rules.iter().any(|r| r.id == "system_temp"));
@@ -416,7 +420,10 @@ mod tests {
 
     #[test]
     fn future_rules_is_empty_when_elevated() {
-        assert!(future_rules(&Config::default(), true).is_empty());
+        use pc_cleaner_core::rule::builtin_rules;
+
+        let all = builtin_rules(&Config::default());
+        assert!(future_rules(&all, true).is_empty());
     }
 
     #[test]
@@ -424,12 +431,13 @@ mod tests {
         use pc_cleaner_core::rule::{builtin_rules, scannable_rules};
 
         let config = Config::default();
+        let all = builtin_rules(&config);
         for elevated in [false, true] {
-            let future = future_rules(&config, elevated);
+            let future = future_rules(&all, elevated);
             let scannable = scannable_rules(&config, elevated);
             assert_eq!(
                 future.len() + scannable.len(),
-                builtin_rules(&config).len(),
+                all.len(),
                 "elevated={elevated}: future_rules と scannable_rules の和が全ルール数と一致すること"
             );
             for rule in &future {

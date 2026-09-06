@@ -10,7 +10,7 @@ use pc_cleaner_core::platform::{Platform, RestoreItemOutcome};
 use pc_cleaner_core::{
     BucketBreakdown, CategoryBreakdown, Config, DeleteMode, DeleteOutcome, DeletePlan,
     DeleteProgress, DeleteRequest, ElevateError, History, ItemOutcome, RestoreOutcome, Rule,
-    ScanEntry, ScanProgress, SkipReason, audit, breakdown, config, history, rule,
+    ScanEntry, ScanProgress, SkipReason, audit, breakdown, config, history,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -129,6 +129,12 @@ pub struct App {
 
     scope: Scope,
     rules: Vec<Rule>,
+    /// 現在の `scope` に関わらない、解決済みの全ルール（`RuleSet::all()`）。
+    /// サイドバーのルール別既定・「管理者権限が必要」一覧・ユーザー定義ルール
+    /// 件数の表示に使う（`rules` は scope で絞り込まれているため、Safe のみ
+    /// 走査中は Caution/Review やユーザー定義ルールの設定ができなくなって
+    /// しまうのを避けるため。追随漏れ修正 / Issue #55）。
+    all_rules: Vec<Rule>,
     entries: Vec<ScanEntry>,
     skipped: Vec<(String, SkipReason)>,
 
@@ -225,6 +231,7 @@ impl App {
             confirming_restore_run_id: None,
             scope: Scope::SafeOnly,
             rules: Vec::new(),
+            all_rules: Vec::new(),
             entries: Vec::new(),
             skipped: Vec::new(),
             plan: None,
@@ -285,14 +292,19 @@ impl App {
                 WorkerMsg::Scan(_) => {}
                 WorkerMsg::ScanDone {
                     rules,
+                    all_rules,
                     entries,
                     rule_issues,
                 } => {
                     self.rules = rules;
+                    self.all_rules = all_rules;
                     self.entries = entries;
                     // ルール定義ファイル（D4 / Issue #54）の検証で見つかった
                     // 問題は、履歴・監査ログの読込失敗と同じく notices へ積む
-                    // だけで、走査自体は組み込みルールのみで続行済み。
+                    // だけで、走査自体は組み込みルールのみで続行済み。再走査の
+                    // たびに同じ問題を積み増さないよう、前回分は入れ替える
+                    // （追随漏れ修正 / Issue #55）。
+                    self.notices.retain(|n| !n.starts_with("ルール定義: "));
                     for issue in rule_issues {
                         self.notices.push(format!("ルール定義: {issue}"));
                     }
@@ -522,7 +534,19 @@ impl App {
             // `self.config` を読んで作った `Vec<Rule>` を同時に借用すると
             // 競合するため、先にルール一覧をローカル変数へ取り出しておく
             // （app.rs 内の他の `.show()` 呼び出しと同じパターン）。
-            let scannable_rules = rule::scannable_rules(&self.config, self.elevated);
+            //
+            // `self.rules`（現在の scope に絞り込み済み）ではなく
+            // `self.all_rules`（`RuleSet::all()`。rules.json の上書き・追加
+            // ルールを含む）を基点にする。Safe のみ走査中でも Caution /
+            // Review ルールの既定やユーザー定義ルールを設定できるようにし、
+            // かつラベルが rules.json の上書きに追随するようにするため
+            // （追随漏れ修正 / Issue #55）。
+            let scannable_rules: Vec<Rule> = self
+                .all_rules
+                .iter()
+                .filter(|r| r.is_permitted(self.elevated))
+                .cloned()
+                .collect();
             for rule in &scannable_rules {
                 ui.label(&rule.label).on_hover_text(&rule.description);
                 let mut pref = self
@@ -579,19 +603,39 @@ impl App {
             }
 
             ui.separator();
-            ui.checkbox(&mut self.config.use_trash, "ゴミ箱経由で削除する")
-                .on_hover_text("オフにすると通常の削除は実行できず、プレビューのみになります。");
+            // 他の設定項目（rule_prefs・age_thresholds・大容量しきい値等）と
+            // 挙動を揃え、この3項目も変更時に自動保存する（「設定を保存」
+            // ボタンを押し忘れると次回起動時に消える不整合の解消 / 追随漏れ
+            // 修正 / Issue #55）。
+            let mut settings_changed = false;
+            if ui
+                .checkbox(&mut self.config.use_trash, "ゴミ箱経由で削除する")
+                .on_hover_text("オフにすると通常の削除は実行できず、プレビューのみになります。")
+                .changed()
+            {
+                self.plan_dirty = true;
+                settings_changed = true;
+            }
             if ui
                 .checkbox(&mut self.config.dry_run_default, "既定でドライラン")
                 .changed()
             {
                 self.plan_dirty = true;
+                settings_changed = true;
             }
-            ui.checkbox(&mut self.config.audit_log_enabled, "削除ログを記録する")
+            if ui
+                .checkbox(&mut self.config.audit_log_enabled, "削除ログを記録する")
                 .on_hover_text(
                     "いつ何を削除したかをパス付きで記録します（誤削除の追跡用）。\
                      「これまでの実績」とは別ファイルで、無効化すると新規記録は行われません。",
-                );
+                )
+                .changed()
+            {
+                settings_changed = true;
+            }
+            if settings_changed {
+                self.save_config();
+            }
 
             ui.separator();
             // 大容量ファイルのしきい値（C2 / Issue #48）。Config はバイト単位で
@@ -714,14 +758,14 @@ impl App {
             egui::CollapsingHeader::new("ルール定義")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let user_defined = self.rules.iter().filter(|r| r.is_user_defined).count();
+                    let user_defined = self.all_rules.iter().filter(|r| r.is_user_defined).count();
                     ui.label(format!("ユーザー定義ルール: {user_defined} 件"));
                     if let Some(path) = &self.rules_path {
                         ui.small(format!("読込元: {}", path.display()));
                     }
                 });
 
-            let future_rules = view::future_rules(&self.config, self.elevated);
+            let future_rules = view::future_rules(&self.all_rules, self.elevated);
             if !future_rules.is_empty() {
                 ui.separator();
                 ui.heading("管理者権限が必要（未対応）");
@@ -848,6 +892,7 @@ impl App {
         let total_size_for_breakdown = plan_summary.map(|s| s.1).unwrap_or(0);
         let category_breakdown_rows =
             view::category_rows(&self.breakdown, &rule_index, total_size_for_breakdown);
+        let bucket_breakdown_rows = view::bucket_rows(&self.buckets, total_size_for_breakdown);
 
         let frame = egui::Frame::side_top_panel(&ctx.style()).fill(CHROME_BG);
         egui::TopBottomPanel::bottom("bottom")
@@ -898,11 +943,25 @@ impl App {
                     }
                 }
                 if !is_empty {
-                    egui::CollapsingHeader::new("内訳")
-                        .id_salt("bottom_breakdown")
+                    // F-GUI-08: 確認モーダルと同じく種類別・サイズ帯別の両方を
+                    // 画面下部でも表示する（追随漏れ修正 / Issue #55）。
+                    egui::CollapsingHeader::new("内訳（種類別）")
+                        .id_salt("bottom_breakdown_category")
                         .default_open(false)
                         .show(ui, |ui| {
                             for row in &category_breakdown_rows {
+                                ui.add(
+                                    egui::ProgressBar::new(row.fraction)
+                                        .desired_width(260.0)
+                                        .text(format!("{}  {}", row.label, row.detail)),
+                                );
+                            }
+                        });
+                    egui::CollapsingHeader::new("内訳（サイズ別）")
+                        .id_salt("bottom_breakdown_bucket")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for row in &bucket_breakdown_rows {
                                 ui.add(
                                     egui::ProgressBar::new(row.fraction)
                                         .desired_width(260.0)
